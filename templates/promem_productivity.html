@@ -1,0 +1,237 @@
+{% extends "promem_base.html" %}
+{% set active = "prod" %}
+{% block title %}productivity — memory{% endblock %}
+{% block extra_css %}
+.date-row { display:flex; align-items:center; gap:10px; margin:10px 0 18px;
+            font-family:-apple-system,system-ui,sans-serif; font-size:13px; }
+.date-row label { color:var(--fg2); font-weight:600; font-size:11px;
+                  text-transform:uppercase; letter-spacing:0.4px; }
+.date-row input[type=date] { padding:6px 10px; border:1px solid var(--border);
+                              border-radius:6px; font:inherit; }
+.date-row .btn { padding:6px 14px; background:var(--bg); border:1px solid var(--border);
+                 border-radius:6px; cursor:pointer; font:inherit; color:var(--fg2); }
+.date-row .btn:hover { border-color:var(--blue); color:var(--blue); }
+.date-row .hint { color:var(--fg3); font-size:12px; }
+
+/* Coverage strip — 30 cells one per day */
+.coverage-strip { background:var(--bg); border:1px solid var(--border); border-radius:10px;
+                  padding:14px 18px; margin-bottom:16px; }
+.coverage-strip h3 { margin:0 0 8px; font-size:11px; color:var(--fg3);
+                     text-transform:uppercase; letter-spacing:0.4px; font-weight:700; }
+.cov-grid { display:grid; grid-template-columns:repeat(30, 1fr); gap:3px; max-width:760px; }
+.cov-cell { aspect-ratio:1; border-radius:3px; cursor:pointer; }
+.cov-cell.l-0 { background:var(--bg3); }
+.cov-cell.l-1 { background:#bbf7d0; }
+.cov-cell.l-2 { background:#86efac; }
+.cov-cell.l-3 { background:#4ade80; }
+.cov-cell.l-4 { background:#16a34a; }
+.cov-cell.selected { outline:2px solid var(--fg); }
+.cov-legend { display:flex; gap:8px; align-items:center; font-size:11px;
+              color:var(--fg3); margin-top:8px; }
+.cov-legend .lbox { width:11px; height:11px; border-radius:2px; }
+
+/* Stat cards row */
+.stat-cards { display:grid; grid-template-columns:repeat(4, 1fr); gap:10px;
+              margin:14px 0 18px; }
+.stat-card { background:var(--bg); border:1px solid var(--border); border-radius:10px;
+             padding:14px 18px; }
+.stat-card .v { font-size:28px; font-weight:700; line-height:1; margin-bottom:6px; }
+.stat-card .v.green { color:var(--green); }
+.stat-card .v.blue { color:var(--blue); }
+.stat-card .v.purple { color:var(--purple); }
+.stat-card .v .unit { font-size:14px; font-weight:600; color:var(--fg3); margin-left:2px; }
+.stat-card .k { font-size:11px; color:var(--fg3); text-transform:uppercase; letter-spacing:0.4px; }
+
+/* Two-column widgets grid */
+.widgets { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:16px;
+           margin-top:16px; }
+.widget { background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:16px 18px; }
+.widget h3 { margin:0 0 10px; font-size:13px; color:var(--fg2); text-transform:uppercase;
+             letter-spacing:0.4px; font-weight:700; }
+.widget.full { grid-column:1 / -1; }
+
+/* Weekly trend bar chart */
+.weekly { display:flex; align-items:flex-end; height:120px; gap:8px; padding-top:6px; }
+.weekly .col { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; }
+.weekly .col .bar { width:100%; background:var(--bg3); border-radius:4px 4px 0 0;
+                    transition:background 0.15s; min-height:2px; }
+.weekly .col.sel .bar { background:var(--blue); }
+.weekly .col .lbl { font-size:11px; color:var(--fg3); margin-top:5px;
+                    font-family:-apple-system,system-ui,sans-serif; }
+.weekly .col .v { font-size:11px; color:var(--fg2); font-weight:700; margin-top:2px;
+                  font-family:ui-monospace,monospace; }
+
+/* App / project / context bar rows */
+.bar-row { display:flex; align-items:center; gap:10px; margin:5px 0; font-size:12px; }
+.bar-row .label { min-width:140px; max-width:200px; overflow:hidden; text-overflow:ellipsis;
+                  white-space:nowrap; color:var(--fg2); }
+.bar-row .bar { flex:1; height:14px; background:var(--bg3); border-radius:3px; }
+.bar-row .seg { height:100%; background:var(--blue); border-radius:3px; }
+.bar-row .v { width:60px; text-align:right; color:var(--fg3);
+              font-family:ui-monospace,monospace; font-size:11px; }
+
+/* Hourly activity */
+.heatmap { display:flex; gap:2px; align-items:flex-end; height:90px; padding-top:6px; }
+.heatmap .col { flex:1; background:var(--bg3); border-radius:3px 3px 0 0; min-width:6px; }
+.hour-axis { display:grid; grid-template-columns:repeat(24, 1fr); gap:2px; margin-top:4px;
+             font-size:9px; color:var(--fg3); font-family:ui-monospace,monospace; text-align:center; }
+
+/* Input activity */
+.input-cards { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; }
+.input-card { background:var(--bg2); border:1px solid var(--border); border-radius:8px;
+              padding:14px; text-align:center; }
+.input-card .v { font-size:24px; font-weight:700; line-height:1; }
+.input-card .k { font-size:10px; color:var(--fg3); text-transform:uppercase;
+                 letter-spacing:0.4px; margin-top:6px; font-weight:600; }
+
+/* Recent activity list */
+.recent-row { display:grid; grid-template-columns:60px 80px 1fr; gap:10px;
+              padding:8px 0; border-bottom:1px solid var(--border); align-items:center;
+              font-size:13px; }
+.recent-row:last-child { border-bottom:none; }
+.recent-row .time { color:var(--fg3); font-family:ui-monospace,monospace; font-size:11px; }
+.recent-row .worker { display:inline-block; padding:2px 8px; border-radius:8px;
+                       font-size:10px; font-weight:600; text-align:center;
+                       font-family:ui-monospace,monospace; }
+.recent-row .worker.human { background:#dbeafe; color:#1e40af; }
+.recent-row .worker.ai, .recent-row .worker.autonomous, .recent-row .worker.agent { background:#f3e8ff; color:#6b21a8; }
+.recent-row .title { color:var(--fg); }
+
+.empty { color:var(--fg3); font-style:italic; padding:20px 0; text-align:center; font-size:13px; }
+{% endblock %}
+{% block content %}
+<div class="crumbs"><span style="color:var(--fg)">productivity</span></div>
+<h1>Productivity Dashboard</h1>
+<p class="subtitle">Live activity data from tracker.db (Segment 1 + 2).</p>
+
+<form class="date-row" method="get" action="/productivity">
+  <label for="date">Date</label>
+  <input type="date" id="date" name="date" value="{{ sel_date }}">
+  <button type="submit" class="btn">Go</button>
+  <span class="hint">or click a day below</span>
+</form>
+
+<div class="coverage-strip">
+  <h3>Coverage — last 30 days</h3>
+  <div class="cov-grid">
+    {% for c in coverage %}
+    <a class="cov-cell l-{{ c.level }} {% if c.date == sel_date %}selected{% endif %}"
+       href="/productivity?date={{ c.date }}"
+       title="{{ c.date }} — {{ c.min }} min"></a>
+    {% endfor %}
+  </div>
+  <div class="cov-legend">
+    <span>less</span>
+    {% for lv in [0,1,2,3,4] %}<span class="lbox l-{{ lv }}"></span>{% endfor %}
+    <span>more</span>
+  </div>
+</div>
+
+<div class="stat-cards">
+  <div class="stat-card"><div class="v">{{ stats.total_min }}<span class="unit">m</span></div><div class="k">Total Time</div></div>
+  <div class="stat-card"><div class="v green">{{ stats.prod_min }}<span class="unit">m</span></div><div class="k">Productive</div></div>
+  <div class="stat-card"><div class="v blue">{{ stats.human_min }}<span class="unit">m</span></div><div class="k">Human</div></div>
+  <div class="stat-card"><div class="v purple">{{ stats.ai_min }}<span class="unit">m</span></div><div class="k">AI-Assisted</div></div>
+</div>
+
+<div class="widget full">
+  <h3>Weekly Trend</h3>
+  <div class="weekly">
+    {% for w in weekly %}
+    <a class="col {% if w.is_sel %}sel{% endif %}" href="/productivity?date={{ w.date }}" style="text-decoration:none">
+      <div class="bar" style="height:{{ ((100 * w.min / max_weekly)|int) if max_weekly else 0 }}%"></div>
+      <div class="lbl">{{ w.label }}</div>
+      <div class="v">{{ w.min }}m</div>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="widgets">
+
+  <div class="widget">
+    <h3>Time by Application</h3>
+    {% if by_app %}
+      {% set max_app = by_app[0].secs or 1 %}
+      {% for r in by_app %}
+      <div class="bar-row">
+        <span class="label" title="{{ r.app }}">{{ r.app }}</span>
+        <div class="bar"><div class="seg" style="width:{{ (100 * r.secs / max_app)|int }}%"></div></div>
+        <span class="v">{{ "%.1f"|format(r.secs / 60) }} m</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty">No activity captured.</div>
+    {% endif %}
+  </div>
+
+  <div class="widget">
+    <h3>Time by Project</h3>
+    {% if by_project %}
+      {% set max_proj = by_project[0].mins or 1 %}
+      {% for r in by_project %}
+      <div class="bar-row">
+        <span class="label" title="{{ r.name }}">{{ r.name }}</span>
+        <div class="bar"><div class="seg" style="width:{{ (100 * (r.mins or 0) / max_proj)|int }}%; background:var(--green)"></div></div>
+        <span class="v">{{ "%.1f"|format(r.mins or 0) }} m</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty">No project-matched activity (or no deliverables defined).</div>
+    {% endif %}
+  </div>
+
+  <div class="widget full">
+    <h3>Hourly Activity</h3>
+    <div class="heatmap">
+      {% for v in hour_counts %}
+      <div class="col" style="height:{{ ((100 * v / max_hour)|int) if max_hour else 0 }}%; {% if v %}background:var(--blue){% endif %}" title="{{ v }} min at {{ '%02d'|format(loop.index0) }}h"></div>
+      {% endfor %}
+    </div>
+    <div class="hour-axis">
+      {% for h in range(24) %}<span>{{ h }}</span>{% endfor %}
+    </div>
+  </div>
+
+  <div class="widget">
+    <h3>Input Activity</h3>
+    <div class="input-cards">
+      <div class="input-card"><div class="v">{{ input_act.frames }}</div><div class="k">Frames Captured</div></div>
+      <div class="input-card"><div class="v">{{ input_act.kb }}</div><div class="k">Keyboard Active</div></div>
+      <div class="input-card"><div class="v">{{ input_act.mouse }}</div><div class="k">Mouse Active</div></div>
+    </div>
+  </div>
+
+  <div class="widget">
+    <h3>Top Contexts</h3>
+    {% if top_ctx %}
+      {% set max_ctx = top_ctx[0].n or 1 %}
+      {% for r in top_ctx %}
+      <div class="bar-row">
+        <span class="label" title="{{ r.ctx_label }}">{{ r.ctx_label }}</span>
+        <div class="bar"><div class="seg" style="width:{{ (100 * r.n / max_ctx)|int }}%; background:var(--purple)"></div></div>
+        <span class="v">{{ r.n }} pages</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty">No classified pages on this date.</div>
+    {% endif %}
+  </div>
+
+  <div class="widget full">
+    <h3>Recent Activity</h3>
+    {% if recent %}
+      {% for r in recent %}
+      <div class="recent-row">
+        <span class="time">{{ r.time }}</span>
+        <span class="worker {{ r.worker }}">{{ r.worker }}</span>
+        <span class="title">{{ r.title }}</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty">No segments captured.</div>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}

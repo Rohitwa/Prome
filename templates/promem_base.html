@@ -1,0 +1,44 @@
+<!doctype html><html><head><meta charset="utf-8">
+<title>{% block title %}ProMe (simplified){% endblock %}</title>
+<style>
+:root { --bg:#fff; --bg2:#f7f7f8; --bg3:#eef0f3; --fg:#111; --fg2:#3d3d3d; --fg3:#7a7a7a;
+        --border:#e2e4e8; --blue:#2563eb; --green:#16a34a; --orange:#ea580c;
+        --purple:#7c3aed; --red:#dc2626; --amber:#d97706; --gray:#6b7280; }
+* { box-sizing:border-box; }
+body { font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif; margin:0;
+       background:var(--bg2); color:var(--fg); }
+.topbar { background:#0f172a; color:#fff; padding:10px 20px; font-size:13px;
+          display:flex; align-items:center; gap:14px; }
+.topbar a { color:#93c5fd; text-decoration:none; }
+.topbar a.brand { color:#fff; font-weight:700; }
+.topbar a.active { color:#fff; }
+.topbar .right { margin-left:auto; opacity:.7; font-size:11px; font-family:ui-monospace,monospace; }
+.wrap { max-width:1080px; margin:0 auto; padding:24px; }
+.crumbs { font-size:12px; color:var(--fg3); margin-bottom:14px; }
+.crumbs a { color:var(--blue); text-decoration:none; }
+h1 { font-size:26px; margin:0 0 6px; }
+.subtitle { color:var(--fg2); font-size:14px; margin-bottom:18px; }
+.meta-row { display:flex; gap:10px; flex-wrap:wrap; margin:12px 0 18px; font-size:11px;
+            color:var(--fg3); }
+.meta-row span { background:var(--bg); border:1px solid var(--border);
+                 padding:3px 10px; border-radius:14px; font-family:ui-monospace,monospace; }
+.toggle-btn { background:none; border:1px solid var(--border); padding:5px 12px;
+              border-radius:8px; font-size:12px; color:var(--fg2); cursor:pointer;
+              font-family:-apple-system,system-ui,sans-serif; }
+.toggle-btn:hover { border-color:var(--blue); color:var(--blue); }
+.note { font-size:11px; color:var(--fg3); margin-top:6px; }
+{% block extra_css %}{% endblock %}
+</style></head><body>
+<div class="topbar">
+  <a class="brand" href="/wiki">memory</a>
+  <a href="/wiki" {% if active=='wiki' %}class="active"{% endif %}>wiki</a>
+  <a href="/projects" {% if active=='projects' %}class="active"{% endif %}>projects</a>
+  <a href="/projects/new" {% if active=='new' %}class="active"{% endif %}>new project</a>
+  <a href="/productivity" {% if active=='prod' %}class="active"{% endif %}>productivity</a>
+  <span class="right">simplified · :8888</span>
+</div>
+<div class="wrap">
+{% block content %}{% endblock %}
+</div>
+{% block scripts %}{% endblock %}
+</body></html>

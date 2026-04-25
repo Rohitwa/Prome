@@ -1,0 +1,69 @@
+{% extends "promem_base.html" %}
+{% set active = "new" %}
+{% block title %}New project — memory{% endblock %}
+{% block extra_css %}
+form { background:var(--bg); border:1px solid var(--border); border-radius:10px;
+       padding:18px 20px; max-width:780px; }
+label { display:block; font-size:12px; color:var(--fg2); font-weight:600; margin:10px 0 4px;
+        text-transform:uppercase; letter-spacing:0.4px; }
+input[type=text], textarea { width:100%; padding:8px 10px; border:1px solid var(--border);
+                              border-radius:6px; font-family:inherit; font-size:13px; }
+textarea { min-height:60px; resize:vertical; }
+.deliv-row { background:var(--bg2); border:1px solid var(--border); border-radius:8px;
+             padding:12px 14px; margin:10px 0; }
+.deliv-row label { font-size:10px; }
+.btn-row { display:flex; gap:10px; margin-top:18px; }
+.btn { padding:8px 16px; border-radius:8px; font-size:13px; cursor:pointer;
+       font-family:inherit; border:1px solid var(--border); background:var(--bg); color:var(--fg2); }
+.btn-primary { background:var(--blue); color:#fff; border-color:var(--blue); }
+.btn-primary:hover { background:#1d4ed8; }
+{% endblock %}
+{% block content %}
+<div class="crumbs"><a href="/projects">projects</a> › <span style="color:var(--fg)">New project</span></div>
+<h1>New project</h1>
+<p class="subtitle">Define a project + its deliverables. Keywords (comma-separated) drive auto-matching of work_pages.</p>
+
+<form method="post" action="/projects/new">
+  <label>Project name</label>
+  <input type="text" name="name" required placeholder="e.g. Build and Launch ProMe">
+
+  <label>Owner (optional)</label>
+  <input type="text" name="owner" placeholder="Rohit">
+
+  <label>Description</label>
+  <textarea name="description" placeholder="One-line summary of the project goal"></textarea>
+
+  <h3 style="margin-top:24px; font-size:14px;">Deliverables</h3>
+  <p class="note">Add at least one deliverable. Keywords are comma-separated. Use multi-word phrases to anchor matches (e.g. <code>media mantra, install</code>).</p>
+
+  <div id="delivs">
+    <div class="deliv-row">
+      <label>Title</label>
+      <input type="text" name="d_title" placeholder="e.g. Build and launch the pipeline in Git">
+      <label>Description</label>
+      <textarea name="d_desc"></textarea>
+      <label>Keywords (comma-separated)</label>
+      <input type="text" name="d_keywords" placeholder="git push, pull request, code review">
+    </div>
+  </div>
+  <button type="button" class="btn" onclick="addDeliv()">+ add another deliverable</button>
+
+  <div class="btn-row">
+    <button type="submit" class="btn btn-primary">Create project</button>
+    <a class="btn" href="/projects">Cancel</a>
+  </div>
+</form>
+
+<script>
+function addDeliv() {
+  const row = document.createElement('div');
+  row.className = 'deliv-row';
+  row.innerHTML = `
+    <label>Title</label><input type="text" name="d_title">
+    <label>Description</label><textarea name="d_desc"></textarea>
+    <label>Keywords (comma-separated)</label><input type="text" name="d_keywords">
+  `;
+  document.getElementById('delivs').appendChild(row);
+}
+</script>
+{% endblock %}

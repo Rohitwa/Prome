@@ -1,0 +1,64 @@
+{% extends "promem_base.html" %}
+{% set active = "wiki" %}
+{% block title %}memory · ProMe{% endblock %}
+{% block extra_css %}
+.cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px;
+         margin:18px 0; }
+.card { background:var(--bg); border:1px solid var(--border); border-radius:12px;
+        padding:18px; transition:border-color 0.15s; }
+.card:hover { border-color:var(--blue); }
+.card a.title { color:var(--fg); text-decoration:none; font-size:18px; font-weight:700;
+                display:block; margin-bottom:6px; }
+.card .tag { color:var(--fg2); font-size:14px; line-height:1.5; font-style:italic;
+             border-left:3px solid var(--border); padding-left:10px; margin:6px 0 10px; }
+.card .row { display:flex; justify-content:space-between; align-items:center; margin-top:10px; }
+.card .npages { font-size:11px; color:var(--fg3); font-family:ui-monospace,monospace;
+                background:var(--bg3); padding:2px 8px; border-radius:8px; }
+.card .open { font-size:13px; color:var(--blue); text-decoration:none; }
+.archive-card { border-style:dashed; opacity:0.85; }
+.banners { display:flex; gap:10px; flex-wrap:wrap; }
+.banner { background:var(--bg); border:1px solid var(--border); border-left:3px solid var(--amber);
+          padding:8px 14px; border-radius:8px; font-size:12px; }
+.banner.error { border-left-color:var(--red); }
+{% endblock %}
+{% block content %}
+<div class="crumbs"><span style="color:var(--fg)">memory</span></div>
+<h1>Projects — memory wiki</h1>
+<p class="subtitle">Each project gets a synthesized wiki page from the last 30 days of activity.
+Personal/distraction/career/residual filtered to archive.</p>
+
+<div class="meta-row">
+  <span>last sync: {{ state.last_sync_at or "never" }}</span>
+  <span>last classify: {{ state.last_classify_at or "never" }}</span>
+  <span>last synthesis: {{ state.last_synthesis_at or "never" }}</span>
+  <span>next due: {{ state.next_due or "—" }}</span>
+</div>
+
+{% if n_pending_sc or n_unfiled %}
+<div class="banners">
+  {% if n_pending_sc %}<span class="banner">{{ n_pending_sc }} pending SC proposal{{ "s" if n_pending_sc != 1 else "" }} (review needed)</span>{% endif %}
+  {% if n_unfiled %}<span class="banner">{{ n_unfiled }} unfiled work_pages</span>{% endif %}
+</div>
+{% endif %}
+
+<div class="cards">
+  {% for c in cards %}
+  <div class="card">
+    <a class="title" href="/wiki/sc/{{ c.slug }}">{{ c.label }}</a>
+    {% if c.tagline %}<div class="tag">{{ c.tagline }}</div>{% else %}<div class="tag" style="color:var(--fg3)">(no synthesis yet)</div>{% endif %}
+    <div class="row">
+      <span class="npages">{{ c.n_pages }} pages</span>
+      <a class="open" href="/wiki/sc/{{ c.slug }}">open page →</a>
+    </div>
+  </div>
+  {% endfor %}
+  <div class="card archive-card">
+    <a class="title" href="/wiki/archive">Archive (filtered)</a>
+    <div class="tag">Personal · Side projects · Career · Residual — kept retrievable but not synthesized.</div>
+    <div class="row">
+      <span class="npages">{{ n_archive }} pages</span>
+      <a class="open" href="/wiki/archive">open archive →</a>
+    </div>
+  </div>
+</div>
+{% endblock %}
