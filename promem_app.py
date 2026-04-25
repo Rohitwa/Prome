@@ -1,17 +1,17 @@
-"""ProMe simplified server — Stage 6.
+"""ProMem — multi-user FastAPI app.
 
-FastAPI on port 8888. Reads prome.db (memory + projects) and tracker.db
-(productivity widgets). Mirrors the page shape of port 8100 but on the new
-simplified engine only.
+Cloud-deployable: prome.db is now Supabase Postgres; tracker.db stays a
+local SQLite (read-only) since it lives on the user's PC. Auth is via
+Supabase JWT (Authorization: Bearer or promem_session cookie).
 
 Routes:
   /                              redirect → /wiki
-  /wiki                          index of 4 SC cards + archive
-  /wiki/sc/<slug>                single SC wiki page (Karpathy-style)
+  /wiki                          per-user index of SC cards + archive
+  /wiki/sc/<slug>                single SC wiki page
   /wiki/archive                  archived pages, day-grouped
   /projects                      tracker dashboard (Tree + Daily tabs)
   /projects/new                  CRUD form for project + deliverables
-  /productivity                  4 widgets reading tracker.db
+  /productivity                  4 widgets reading tracker.db (local file)
 
 APIs (JSON):
   POST /api/projects                                {name, owner, description}
@@ -19,10 +19,12 @@ APIs (JSON):
   POST /api/deliverables/<id>/feedback              {date, verdict, note}
   POST /api/deliverables/<id>/match/<page_id>/pin
   POST /api/deliverables/<id>/match/<page_id>/unpin
-  POST /api/orchestrator/run                        — manual tick
-  GET  /api/orchestrator/status                     — last_*_at + should_run
+  POST /api/orchestrator/run                        — disabled in cloud (Phase 4+)
+  GET  /api/orchestrator/status                     — disabled in cloud (Phase 4+)
 
 Run:
+  PROMEM_DB_URL="postgresql://..."  \
+  SUPABASE_JWT_SECRET="..."         \
   python3 promem_app.py
 """
 
@@ -39,45 +41,37 @@ from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
+import db
+from auth import get_current_user
+
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("PROMEM_DATA_DIR", str(ROOT / "data")))
-DB = DATA_DIR / "prome.db"
 TRACKER = Path(os.environ.get("PROMEM_TRACKER_DB", str(DATA_DIR / "tracker.db")))
 TEMPLATES = Jinja2Templates(directory=str(ROOT / "templates"))
 
-# Load .env on startup so phase calls into orchestrator have OPENAI_API_KEY.
+# Load .env on startup — provides PROMEM_DB_URL, SUPABASE_JWT_SECRET, etc.
 ENV_FILE = ROOT / ".env"
 if ENV_FILE.exists():
     for _ln in ENV_FILE.read_text().splitlines():
         if "=" in _ln and not _ln.startswith("#"):
             _k, _, _v = _ln.partition("=")
-            os.environ.setdefault(_k.strip(), _v.strip())
+            os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 
-def _ensure_schema() -> None:
-    """Create data dir + apply the 0001 migration on first boot.
-    The migration is `CREATE TABLE IF NOT EXISTS` so re-runs are safe."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    migration = ROOT / "migrations" / "0001_prome_simple.sql"
-    if migration.exists():
-        with sqlite3.connect(DB) as c:
-            c.executescript(migration.read_text())
-
-
-_ensure_schema()
 app = FastAPI(title="ProMem")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# DB helpers
+# DB helpers — prome.db via psycopg pool (db.conn), tracker.db via sqlite3
 # ──────────────────────────────────────────────────────────────────────────────
-def _conn(path: Path = DB) -> sqlite3.Connection:
-    c = sqlite3.connect(f"file:{path}?mode=ro" if path == TRACKER else path,
-                        uri=(path == TRACKER), timeout=30.0)
+def _tracker_conn() -> sqlite3.Connection:
+    """Open tracker.db read-only. Lives on the user's local machine; cloud
+    deploy just shows a 'not connected' page until Phase 4 sync exists."""
+    c = sqlite3.connect(f"file:{TRACKER}?mode=ro", uri=True, timeout=30.0)
     c.row_factory = sqlite3.Row
     return c
 
@@ -103,7 +97,6 @@ def _md_to_html(md: str) -> str:
     return "\n".join(out)
 
 
-# Register the helper so templates can use {{ body|md }}
 TEMPLATES.env.filters["md"] = _md_to_html
 
 
@@ -116,164 +109,189 @@ def root() -> RedirectResponse:
 
 
 @app.get("/wiki", response_class=HTMLResponse)
-def wiki_index(request: Request) -> HTMLResponse:
-    conn = _conn()
+def wiki_index(request: Request, user_id: str = Depends(get_current_user)) -> HTMLResponse:
     cards = []
-    for r in conn.execute(
-        "SELECT label, is_keep FROM sc_registry ORDER BY is_keep DESC, label"
-    ).fetchall():
-        if r["is_keep"] == 0:
-            continue
-        n_pages = conn.execute(
-            "SELECT COUNT(*) FROM work_pages WHERE sc_label=? AND COALESCE(is_archived,0)=0",
-            (r["label"],),
-        ).fetchone()[0]
-        cache = conn.execute(
-            "SELECT prose_json, generated_at FROM sc_wiki_cache WHERE sc_label=?",
-            (r["label"],),
+    with db.conn() as c:
+        kept = c.execute(
+            "SELECT label, is_keep FROM sc_registry "
+            "WHERE user_id=%s ORDER BY is_keep DESC, label",
+            (user_id,),
+        ).fetchall()
+        for r in kept:
+            if r["is_keep"] == 0:
+                continue
+            n_pages = c.execute(
+                "SELECT COUNT(*) AS n FROM work_pages "
+                "WHERE user_id=%s AND sc_label=%s AND COALESCE(is_archived,0)=0",
+                (user_id, r["label"]),
+            ).fetchone()["n"]
+            cache = c.execute(
+                "SELECT prose_json, generated_at FROM sc_wiki_cache "
+                "WHERE user_id=%s AND sc_label=%s",
+                (user_id, r["label"]),
+            ).fetchone()
+            prose = json.loads(cache["prose_json"]) if cache and cache["prose_json"] else None
+            cards.append({
+                "label": r["label"], "slug": _slug(r["label"]),
+                "n_pages": n_pages,
+                "tagline": (prose or {}).get("tagline") or "",
+                "generated_at": cache["generated_at"] if cache else None,
+            })
+        n_arch = c.execute(
+            "SELECT COUNT(*) AS n FROM work_pages "
+            "WHERE user_id=%s AND COALESCE(is_archived,0)=1",
+            (user_id,),
+        ).fetchone()["n"]
+        n_unfiled = c.execute(
+            "SELECT COUNT(*) AS n FROM work_pages "
+            "WHERE user_id=%s AND COALESCE(is_unfiled,0)=1",
+            (user_id,),
+        ).fetchone()["n"]
+        n_pending_sc = c.execute(
+            "SELECT COUNT(*) AS n FROM pending_sc "
+            "WHERE user_id=%s AND status='pending'",
+            (user_id,),
+        ).fetchone()["n"]
+        state_row = c.execute(
+            "SELECT * FROM orchestrator_state WHERE user_id=%s",
+            (user_id,),
         ).fetchone()
-        prose = json.loads(cache["prose_json"]) if cache and cache["prose_json"] else None
-        cards.append({
-            "label": r["label"], "slug": _slug(r["label"]),
-            "n_pages": n_pages,
-            "tagline": (prose or {}).get("tagline") or "",
-            "generated_at": (cache or {})["generated_at"] if cache else None,
-        })
-    n_arch = conn.execute(
-        "SELECT COUNT(*) FROM work_pages WHERE COALESCE(is_archived,0)=1"
-    ).fetchone()[0]
-    n_unfiled = conn.execute(
-        "SELECT COUNT(*) FROM work_pages WHERE COALESCE(is_unfiled,0)=1"
-    ).fetchone()[0]
-    n_pending_sc = conn.execute(
-        "SELECT COUNT(*) FROM pending_sc WHERE status='pending'"
-    ).fetchone()[0]
-    state = conn.execute("SELECT * FROM orchestrator_state WHERE id=1").fetchone()
-    conn.close()
+
     return TEMPLATES.TemplateResponse(request, "promem_wiki_index.html", {
         "cards": cards, "n_archive": n_arch,
         "n_unfiled": n_unfiled, "n_pending_sc": n_pending_sc,
-        "state": dict(state) if state else {},
+        "state": dict(state_row) if state_row else {},
     })
 
 
 @app.get("/wiki/sc/{slug}", response_class=HTMLResponse)
-def wiki_sc(slug: str, request: Request) -> HTMLResponse:
-    conn = _conn()
-    sc_row = None
-    for r in conn.execute(
-        "SELECT label FROM sc_registry WHERE is_keep=1"
-    ).fetchall():
-        if _slug(r["label"]) == slug:
-            sc_row = r["label"]
-            break
-    if not sc_row:
-        conn.close()
-        raise HTTPException(404, f"No keep SC matches slug '{slug}'")
-    cache = conn.execute(
-        "SELECT prose_json, generated_at, source_page_count FROM sc_wiki_cache "
-        "WHERE sc_label=?", (sc_row,),
-    ).fetchone()
-    prose = json.loads(cache["prose_json"]) if cache and cache["prose_json"] else {
-        "tagline": "(no synthesis yet — run the synthesis phase)",
-        "sections": [],
-    }
+def wiki_sc(slug: str, request: Request, user_id: str = Depends(get_current_user)) -> HTMLResponse:
+    with db.conn() as c:
+        sc_row = None
+        for r in c.execute(
+            "SELECT label FROM sc_registry WHERE user_id=%s AND is_keep=1",
+            (user_id,),
+        ).fetchall():
+            if _slug(r["label"]) == slug:
+                sc_row = r["label"]
+                break
+        if not sc_row:
+            raise HTTPException(404, f"No keep SC matches slug '{slug}'")
+        cache = c.execute(
+            "SELECT prose_json, generated_at, source_page_count FROM sc_wiki_cache "
+            "WHERE user_id=%s AND sc_label=%s",
+            (user_id, sc_row),
+        ).fetchone()
+        prose = json.loads(cache["prose_json"]) if cache and cache["prose_json"] else {
+            "tagline": "(no synthesis yet — run the synthesis phase)",
+            "sections": [],
+        }
+        by_ctx = defaultdict(list)
+        rows = c.execute(
+            "SELECT id, title, summary, date_local, ctx_label, total_minutes "
+            "FROM work_pages "
+            "WHERE user_id=%s AND sc_label=%s AND COALESCE(is_archived,0)=0 "
+            "ORDER BY date_local DESC LIMIT 200",
+            (user_id, sc_row),
+        ).fetchall()
+        for r in rows:
+            by_ctx[r["ctx_label"] or "—"].append(dict(r))
+        n_pages = c.execute(
+            "SELECT COUNT(*) AS n FROM work_pages "
+            "WHERE user_id=%s AND sc_label=%s AND COALESCE(is_archived,0)=0",
+            (user_id, sc_row),
+        ).fetchone()["n"]
 
-    by_ctx = defaultdict(list)
-    for r in conn.execute(
-        "SELECT id, title, summary, date_local, ctx_label, total_minutes "
-        "FROM work_pages WHERE sc_label=? AND COALESCE(is_archived,0)=0 "
-        "ORDER BY date_local DESC LIMIT 200", (sc_row,),
-    ).fetchall():
-        by_ctx[r["ctx_label"] or "—"].append(dict(r))
-    n_pages = conn.execute(
-        "SELECT COUNT(*) FROM work_pages WHERE sc_label=? AND COALESCE(is_archived,0)=0",
-        (sc_row,),
-    ).fetchone()[0]
-    conn.close()
     return TEMPLATES.TemplateResponse(request, "promem_sc.html", {
         "label": sc_row, "slug": slug, "prose": prose,
         "by_ctx": dict(by_ctx), "n_pages": n_pages,
-        "generated_at": (cache or {})["generated_at"] if cache else None,
-        "source_count": (cache or {})["source_page_count"] if cache else 0,
+        "generated_at": cache["generated_at"] if cache else None,
+        "source_count": cache["source_page_count"] if cache else 0,
     })
 
 
 @app.get("/wiki/archive", response_class=HTMLResponse)
-def wiki_archive(request: Request) -> HTMLResponse:
-    conn = _conn()
+def wiki_archive(request: Request, user_id: str = Depends(get_current_user)) -> HTMLResponse:
     by_sc: dict[str, list[dict]] = defaultdict(list)
-    for r in conn.execute(
-        "SELECT id, title, summary, date_local, sc_label, ctx_label "
-        "FROM work_pages WHERE COALESCE(is_archived,0)=1 "
-        "ORDER BY date_local DESC LIMIT 500"
-    ).fetchall():
-        by_sc[r["sc_label"]].append(dict(r))
-    n_total = conn.execute(
-        "SELECT COUNT(*) FROM work_pages WHERE COALESCE(is_archived,0)=1"
-    ).fetchone()[0]
-    conn.close()
+    with db.conn() as c:
+        for r in c.execute(
+            "SELECT id, title, summary, date_local, sc_label, ctx_label "
+            "FROM work_pages "
+            "WHERE user_id=%s AND COALESCE(is_archived,0)=1 "
+            "ORDER BY date_local DESC LIMIT 500",
+            (user_id,),
+        ).fetchall():
+            by_sc[r["sc_label"]].append(dict(r))
+        n_total = c.execute(
+            "SELECT COUNT(*) AS n FROM work_pages "
+            "WHERE user_id=%s AND COALESCE(is_archived,0)=1",
+            (user_id,),
+        ).fetchone()["n"]
     return TEMPLATES.TemplateResponse(request, "promem_archive.html", {
         "by_sc": dict(by_sc), "n_total": n_total,
     })
 
 
 @app.get("/projects", response_class=HTMLResponse)
-def projects_view(request: Request) -> HTMLResponse:
-    conn = _conn()
-    projects = [dict(r) for r in conn.execute(
-        "SELECT * FROM projects ORDER BY created_at DESC"
-    ).fetchall()]
-    deliv_by_project: dict[str, list[dict]] = defaultdict(list)
-    for r in conn.execute("SELECT * FROM deliverables").fetchall():
-        d = dict(r)
-        try:
-            d["keywords_list"] = json.loads(d.get("keywords") or "[]")
-        except Exception:
-            d["keywords_list"] = []
-        try:
-            d["ctx_hints_list"] = json.loads(d.get("ctx_hints") or "[]")
-        except Exception:
-            d["ctx_hints_list"] = []
-        # Match pages
-        d["matches"] = [dict(m) for m in conn.execute("""
-            SELECT dm.*, wp.title AS page_title, wp.summary AS page_summary,
-                   wp.date_local, wp.ctx_label, wp.total_minutes,
-                   wp.id AS page_id
-            FROM deliverable_match dm
-            JOIN work_pages wp ON wp.id = dm.page_id
-            WHERE dm.deliverable_id = ?
-            ORDER BY wp.date_local DESC, dm.score DESC
-        """, (d["id"],)).fetchall()]
-        # Stats
-        dates = sorted({m["date_local"] for m in d["matches"] if m["date_local"]})
-        d["stats"] = {
-            "n_pages": len(d["matches"]),
-            "minutes": round(sum(m["total_minutes"] or 0 for m in d["matches"]), 1),
-            "days_active": len(dates),
-            "last": dates[-1] if dates else None,
-        }
-        # Wiki cache
-        cache = conn.execute(
-            "SELECT prose_json FROM deliverable_wiki_cache WHERE deliverable_id=?",
-            (d["id"],),
-        ).fetchone()
-        d["wiki"] = json.loads(cache["prose_json"]) if cache and cache["prose_json"] else None
-        # Group matches by date for daily tab
-        by_date = defaultdict(list)
-        for m in d["matches"]:
-            by_date[m["date_local"]].append(m)
-        d["by_date"] = dict(sorted(by_date.items(), reverse=True))
-        deliv_by_project[d["project_id"]].append(d)
-    # Existing feedback for restoring tick/cross state
-    fb_rows = [dict(r) for r in conn.execute(
-        "SELECT deliverable_id, date, verdict, note FROM deliverable_daily_feedback"
-    ).fetchall()]
-    fb_map: dict[str, dict] = {}
-    for fb in fb_rows:
-        fb_map[f"{fb['deliverable_id']}|{fb['date']}"] = fb
-    n_pages_total = conn.execute("SELECT COUNT(*) FROM work_pages").fetchone()[0]
-    conn.close()
+def projects_view(request: Request, user_id: str = Depends(get_current_user)) -> HTMLResponse:
+    with db.conn() as c:
+        projects = [dict(r) for r in c.execute(
+            "SELECT * FROM projects WHERE user_id=%s ORDER BY created_at DESC",
+            (user_id,),
+        ).fetchall()]
+        deliv_by_project: dict[str, list[dict]] = defaultdict(list)
+        for r in c.execute(
+            "SELECT * FROM deliverables WHERE user_id=%s",
+            (user_id,),
+        ).fetchall():
+            d = dict(r)
+            try:
+                d["keywords_list"] = json.loads(d.get("keywords") or "[]")
+            except Exception:
+                d["keywords_list"] = []
+            try:
+                d["ctx_hints_list"] = json.loads(d.get("ctx_hints") or "[]")
+            except Exception:
+                d["ctx_hints_list"] = []
+            d["matches"] = [dict(m) for m in c.execute("""
+                SELECT dm.*, wp.title AS page_title, wp.summary AS page_summary,
+                       wp.date_local, wp.ctx_label, wp.total_minutes,
+                       wp.id AS page_id
+                FROM deliverable_match dm
+                JOIN work_pages wp ON wp.id = dm.page_id
+                WHERE dm.user_id=%s AND dm.deliverable_id = %s
+                ORDER BY wp.date_local DESC, dm.score DESC
+            """, (user_id, d["id"])).fetchall()]
+            dates = sorted({m["date_local"] for m in d["matches"] if m["date_local"]})
+            d["stats"] = {
+                "n_pages": len(d["matches"]),
+                "minutes": round(sum(m["total_minutes"] or 0 for m in d["matches"]), 1),
+                "days_active": len(dates),
+                "last": dates[-1] if dates else None,
+            }
+            cache = c.execute(
+                "SELECT prose_json FROM deliverable_wiki_cache "
+                "WHERE user_id=%s AND deliverable_id=%s",
+                (user_id, d["id"]),
+            ).fetchone()
+            d["wiki"] = json.loads(cache["prose_json"]) if cache and cache["prose_json"] else None
+            by_date = defaultdict(list)
+            for m in d["matches"]:
+                by_date[m["date_local"]].append(m)
+            d["by_date"] = dict(sorted(by_date.items(), reverse=True))
+            deliv_by_project[d["project_id"]].append(d)
+        fb_rows = [dict(r) for r in c.execute(
+            "SELECT deliverable_id, date, verdict, note FROM deliverable_daily_feedback "
+            "WHERE user_id=%s",
+            (user_id,),
+        ).fetchall()]
+        fb_map: dict[str, dict] = {}
+        for fb in fb_rows:
+            fb_map[f"{fb['deliverable_id']}|{fb['date']}"] = fb
+        n_pages_total = c.execute(
+            "SELECT COUNT(*) AS n FROM work_pages WHERE user_id=%s",
+            (user_id,),
+        ).fetchone()["n"]
     return TEMPLATES.TemplateResponse(request, "promem_projects.html", {
         "projects": projects,
         "deliv_by_project": dict(deliv_by_project),
@@ -283,16 +301,18 @@ def projects_view(request: Request) -> HTMLResponse:
 
 
 @app.get("/projects/new", response_class=HTMLResponse)
-def projects_new(request: Request) -> HTMLResponse:
+def projects_new(request: Request, user_id: str = Depends(get_current_user)) -> HTMLResponse:
     return TEMPLATES.TemplateResponse(request, "promem_project_new.html", {})
 
 
 @app.get("/productivity", response_class=HTMLResponse)
-def productivity(request: Request, date: str | None = None) -> HTMLResponse:
+def productivity(
+    request: Request,
+    date: str | None = None,
+    user_id: str = Depends(get_current_user),
+) -> HTMLResponse:
     from datetime import date as _d, timedelta as _td, datetime as _dt
     if not TRACKER.exists():
-        # Cloud / fresh-deploy: tracker.db isn't wired up yet. Show a small
-        # informational page rather than crashing the route.
         return HTMLResponse(
             f"""<!doctype html><html><head><title>productivity — ProMem</title>
 <style>body{{font-family:-apple-system,Segoe UI,system-ui,sans-serif;
@@ -306,7 +326,7 @@ a{{color:#2563eb;text-decoration:none;}}</style></head><body>
 <p>Tracker database not connected.</p>
 <div class="note">ProMem couldn't find <code>tracker.db</code> at <code>{TRACKER}</code>.
 Set <code>PROMEM_TRACKER_DB</code> to point at a productivity-tracker SQLite file,
-or mount one to that path.</div>
+or mount one to that path. Cloud sync of tracker data is a Phase 4 deliverable.</div>
 <p style="margin-top:24px"><a href="/wiki">← memory wiki</a> &nbsp;
 <a href="/projects">projects →</a></p>
 </body></html>""",
@@ -319,9 +339,7 @@ or mount one to that path.</div>
         sel_dt = _d.today()
         sel_date = sel_dt.strftime("%Y-%m-%d")
 
-    tconn = _conn(TRACKER)
-
-    # ── Stat cards: total, productive, human, ai (in minutes for selected date)
+    tconn = _tracker_conn()
     stats_row = tconn.execute("""
         SELECT
           COALESCE(SUM(target_segment_length_secs), 0) AS total_secs,
@@ -343,7 +361,6 @@ or mount one to that path.</div>
         "n_segments": stats_row["n_segments"] or 0,
     }
 
-    # ── 30-day coverage heatmap (one cell per day)
     coverage = []
     for i in range(29, -1, -1):
         d = (sel_dt - _td(days=i)).strftime("%Y-%m-%d")
@@ -351,21 +368,18 @@ or mount one to that path.</div>
             "SELECT COALESCE(SUM(target_segment_length_secs),0) FROM context_1 "
             "WHERE date(timestamp_start) = ?", (d,),
         ).fetchone()[0] or 0
-        # Buckets: 0=less, 1=light, 2=mid, 3=more, 4=heavy
         if secs == 0:
             level = 0
-        elif secs < 1800:    # <30min
+        elif secs < 1800:
             level = 1
-        elif secs < 5400:    # <90min
+        elif secs < 5400:
             level = 2
-        elif secs < 14400:   # <240min
+        elif secs < 14400:
             level = 3
         else:
             level = 4
         coverage.append({"date": d, "level": level, "min": round(secs / 60)})
 
-    # ── Weekly trend (Sun..Sat ending at sel_date's week)
-    # Build 7 days ending at sel_date inclusive, labelled by weekday name
     weekly = []
     for i in range(6, -1, -1):
         d = (sel_dt - _td(days=i)).strftime("%Y-%m-%d")
@@ -380,7 +394,6 @@ or mount one to that path.</div>
             "is_sel": (d == sel_date),
         })
 
-    # ── Time by application for selected date
     by_app = [
         {"app": (r["window_name"] or r["platform"] or "—")[:60],
          "secs": int(r["secs"] or 0)}
@@ -393,7 +406,6 @@ or mount one to that path.</div>
         """, (sel_date,)).fetchall()
     ]
 
-    # ── Hourly activity (selected date, 0-23 buckets in MINUTES)
     hour_counts = [0] * 24
     for r in tconn.execute("""
         SELECT CAST(strftime('%H', timestamp_start) AS INTEGER) AS hr,
@@ -403,7 +415,6 @@ or mount one to that path.</div>
         hr = r["hr"] if r["hr"] is not None else 0
         hour_counts[hr] = int((r["secs"] or 0) // 60)
 
-    # ── Input activity (frames + keyboard + mouse from context_2 joined to context_1)
     inp_row = tconn.execute("""
         SELECT COUNT(*) AS frames,
                COALESCE(SUM(CASE WHEN has_keyboard_activity=1 THEN 1 ELSE 0 END), 0) AS kb,
@@ -418,7 +429,6 @@ or mount one to that path.</div>
         "mouse": inp_row["mouse"] or 0,
     }
 
-    # ── Recent activity list (last 12 segments of selected date)
     recent = [
         {"time": r["t"], "title": r["short_title"] or r["window_name"] or "—",
          "worker": r["worker"] or "—"}
@@ -431,26 +441,25 @@ or mount one to that path.</div>
     ]
     tconn.close()
 
-    # ── Time by project (joins through prome.db)
-    pconn = _conn(DB)
-    by_project = [dict(r) for r in pconn.execute("""
-        SELECT p.id, p.name,
-               COUNT(DISTINCT wp.id) AS pages,
-               ROUND(SUM(wp.total_minutes), 1) AS mins
-        FROM projects p
-        JOIN deliverables d ON d.project_id = p.id
-        JOIN deliverable_match dm ON dm.deliverable_id = d.id
-        JOIN work_pages wp ON wp.id = dm.page_id
-        WHERE wp.date_local = ?
-        GROUP BY p.id, p.name
-        ORDER BY mins DESC
-    """, (sel_date,)).fetchall()]
-    top_ctx = [dict(r) for r in pconn.execute("""
-        SELECT ctx_label, COUNT(*) AS n
-        FROM work_pages WHERE date_local = ? AND ctx_label != ''
-        GROUP BY ctx_label ORDER BY n DESC LIMIT 8
-    """, (sel_date,)).fetchall()]
-    pconn.close()
+    with db.conn() as c:
+        by_project = [dict(r) for r in c.execute("""
+            SELECT p.id, p.name,
+                   COUNT(DISTINCT wp.id) AS pages,
+                   ROUND(SUM(wp.total_minutes)::numeric, 1) AS mins
+            FROM projects p
+            JOIN deliverables d ON d.project_id = p.id AND d.user_id = p.user_id
+            JOIN deliverable_match dm ON dm.deliverable_id = d.id AND dm.user_id = d.user_id
+            JOIN work_pages wp ON wp.id = dm.page_id AND wp.user_id = dm.user_id
+            WHERE p.user_id=%s AND wp.date_local = %s
+            GROUP BY p.id, p.name
+            ORDER BY mins DESC
+        """, (user_id, sel_date)).fetchall()]
+        top_ctx = [dict(r) for r in c.execute("""
+            SELECT ctx_label, COUNT(*) AS n
+            FROM work_pages
+            WHERE user_id=%s AND date_local = %s AND ctx_label != ''
+            GROUP BY ctx_label ORDER BY n DESC LIMIT 8
+        """, (user_id, sel_date)).fetchall()]
 
     return TEMPLATES.TemplateResponse(request, "promem_productivity.html", {
         "sel_date": sel_date,
@@ -492,95 +501,104 @@ class FeedbackIn(BaseModel):
 
 
 @app.post("/api/projects")
-def api_create_project(p: ProjectIn) -> dict:
+def api_create_project(p: ProjectIn, user_id: str = Depends(get_current_user)) -> dict:
     pid = "P-" + secrets.token_hex(4)
-    conn = sqlite3.connect(DB, timeout=30.0)
-    conn.execute(
-        "INSERT INTO projects (id, name, owner, description, status) "
-        "VALUES (?, ?, ?, ?, 'active')",
-        (pid, p.name, p.owner, p.description),
-    )
-    conn.commit()
-    conn.close()
+    with db.conn() as c:
+        c.execute(
+            "INSERT INTO projects (id, user_id, name, owner, description, status) "
+            "VALUES (%s, %s, %s, %s, %s, 'active')",
+            (pid, user_id, p.name, p.owner, p.description),
+        )
     return {"ok": True, "id": pid}
 
 
 @app.post("/api/deliverables")
-def api_create_deliverable(d: DeliverableIn) -> dict:
+def api_create_deliverable(d: DeliverableIn, user_id: str = Depends(get_current_user)) -> dict:
     did = "D-" + secrets.token_hex(4)
-    conn = sqlite3.connect(DB, timeout=30.0)
-    conn.execute(
-        "INSERT INTO deliverables (id, project_id, title, description, "
-        "keywords, ctx_hints, status) VALUES (?, ?, ?, ?, ?, ?, 'in progress')",
-        (did, d.project_id, d.title, d.description,
-         json.dumps(d.keywords), json.dumps(d.ctx_hints)),
-    )
-    conn.commit()
-    conn.close()
+    with db.conn() as c:
+        c.execute(
+            "INSERT INTO deliverables (id, user_id, project_id, title, description, "
+            "keywords, ctx_hints, status) VALUES (%s, %s, %s, %s, %s, %s, %s, 'in progress')",
+            (did, user_id, d.project_id, d.title, d.description,
+             json.dumps(d.keywords), json.dumps(d.ctx_hints)),
+        )
     return {"ok": True, "id": did}
 
 
 @app.post("/api/deliverables/{did}/feedback")
-def api_feedback(did: str, fb: FeedbackIn) -> dict:
+def api_feedback(did: str, fb: FeedbackIn, user_id: str = Depends(get_current_user)) -> dict:
     if fb.verdict not in ("correct", "wrong"):
         raise HTTPException(400, "verdict must be 'correct' or 'wrong'")
-    conn = sqlite3.connect(DB, timeout=30.0)
-    # Upsert: same (deliv, date) replaces the previous feedback
-    conn.execute(
-        "DELETE FROM deliverable_daily_feedback WHERE deliverable_id=? AND date=?",
-        (did, fb.date),
-    )
-    conn.execute(
-        "INSERT INTO deliverable_daily_feedback (deliverable_id, date, verdict, note) "
-        "VALUES (?, ?, ?, ?)",
-        (did, fb.date, fb.verdict, fb.note),
-    )
-    conn.commit()
-    conn.close()
+    with db.conn() as c:
+        c.execute(
+            "DELETE FROM deliverable_daily_feedback "
+            "WHERE user_id=%s AND deliverable_id=%s AND date=%s",
+            (user_id, did, fb.date),
+        )
+        c.execute(
+            "INSERT INTO deliverable_daily_feedback (user_id, deliverable_id, date, verdict, note) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (user_id, did, fb.date, fb.verdict, fb.note),
+        )
     return {"ok": True}
 
 
 @app.post("/api/deliverables/{did}/match/{pid}/{action}")
-def api_pin_unpin(did: str, pid: str, action: str) -> dict:
+def api_pin_unpin(
+    did: str, pid: str, action: str,
+    user_id: str = Depends(get_current_user),
+) -> dict:
     if action not in ("pin", "unpin"):
         raise HTTPException(400, "action must be 'pin' or 'unpin'")
-    conn = sqlite3.connect(DB, timeout=30.0)
-    if action == "pin":
-        conn.execute("""
-            INSERT INTO deliverable_match (deliverable_id, page_id, score, source, matched_at)
-            VALUES (?, ?, 1.0, 'pin', datetime('now'))
-            ON CONFLICT(deliverable_id, page_id) DO UPDATE SET source='pin'
-        """, (did, pid))
-    else:
-        conn.execute(
-            "DELETE FROM deliverable_match WHERE deliverable_id=? AND page_id=?",
-            (did, pid),
-        )
-    conn.commit()
-    conn.close()
+    with db.conn() as c:
+        if action == "pin":
+            c.execute("""
+                INSERT INTO deliverable_match (user_id, deliverable_id, page_id, score, source, matched_at)
+                VALUES (%s, %s, %s, 1.0, 'pin', now()::text)
+                ON CONFLICT (user_id, deliverable_id, page_id) DO UPDATE SET source='pin'
+            """, (user_id, did, pid))
+        else:
+            c.execute(
+                "DELETE FROM deliverable_match "
+                "WHERE user_id=%s AND deliverable_id=%s AND page_id=%s",
+                (user_id, did, pid),
+            )
     return {"ok": True, "action": action}
 
 
 @app.post("/api/orchestrator/run")
-def api_orch_run() -> dict:
-    sys.path.insert(0, str(ROOT))
-    from promem_orchestrator import run_full
-    return run_full(reason="manual")
+def api_orch_run(user_id: str = Depends(get_current_user)) -> dict:
+    # The nightly pipeline (sync/classify/match/synthesize) is still SQLite-bound.
+    # Cloud-side run requires Phase 4 (tracker.db sync) + a Postgres rewrite of
+    # promem_pipeline. Until then, the pipeline runs locally on the user's
+    # machine and writes directly to Supabase Postgres.
+    raise HTTPException(
+        status_code=503,
+        detail="Cloud-side pipeline runs are not yet supported. Run "
+               "`python3 promem_orchestrator.py run` locally — it writes to "
+               "Supabase via PROMEM_DB_URL.",
+    )
 
 
 @app.get("/api/orchestrator/status")
-def api_orch_status() -> dict:
-    sys.path.insert(0, str(ROOT))
-    from promem_orchestrator import get_state, should_run
-    ok, reason = should_run()
-    return {**get_state(), "should_run_now": ok, "reason": reason}
+def api_orch_status(user_id: str = Depends(get_current_user)) -> dict:
+    with db.conn() as c:
+        state = c.execute(
+            "SELECT * FROM orchestrator_state WHERE user_id=%s",
+            (user_id,),
+        ).fetchone()
+    return {**(dict(state) if state else {}), "should_run_now": False,
+            "reason": "cloud-side runs disabled (Phase 4+)"}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Form handlers (HTML form posts → /projects/new)
 # ──────────────────────────────────────────────────────────────────────────────
 @app.post("/projects/new")
-async def form_create_project_with_deliverables(request: Request) -> RedirectResponse:
+async def form_create_project_with_deliverables(
+    request: Request,
+    user_id: str = Depends(get_current_user),
+) -> RedirectResponse:
     form = await request.form()
     name = (form.get("name") or "").strip()
     owner = (form.get("owner") or "").strip()
@@ -588,30 +606,27 @@ async def form_create_project_with_deliverables(request: Request) -> RedirectRes
     if not name:
         return RedirectResponse(url="/projects/new?err=name", status_code=303)
     pid = "P-" + secrets.token_hex(4)
-    conn = sqlite3.connect(DB, timeout=30.0)
-    conn.execute(
-        "INSERT INTO projects (id, name, owner, description, status) "
-        "VALUES (?, ?, ?, ?, 'active')",
-        (pid, name, owner, description),
-    )
-    # deliverable rows: titles[]/keywords[]
-    titles = form.getlist("d_title")
-    descs = form.getlist("d_desc")
-    keywords_lists = form.getlist("d_keywords")
-    for i, t in enumerate(titles):
-        t = (t or "").strip()
-        if not t:
-            continue
-        d_desc = (descs[i] if i < len(descs) else "") or ""
-        kws = [w.strip() for w in (keywords_lists[i] if i < len(keywords_lists) else "").split(",") if w.strip()]
-        did = "D-" + secrets.token_hex(4)
-        conn.execute(
-            "INSERT INTO deliverables (id, project_id, title, description, "
-            "keywords, ctx_hints, status) VALUES (?, ?, ?, ?, ?, '[]', 'in progress')",
-            (did, pid, t, d_desc, json.dumps(kws)),
+    with db.conn() as c:
+        c.execute(
+            "INSERT INTO projects (id, user_id, name, owner, description, status) "
+            "VALUES (%s, %s, %s, %s, %s, 'active')",
+            (pid, user_id, name, owner, description),
         )
-    conn.commit()
-    conn.close()
+        titles = form.getlist("d_title")
+        descs = form.getlist("d_desc")
+        keywords_lists = form.getlist("d_keywords")
+        for i, t in enumerate(titles):
+            t = (t or "").strip()
+            if not t:
+                continue
+            d_desc = (descs[i] if i < len(descs) else "") or ""
+            kws = [w.strip() for w in (keywords_lists[i] if i < len(keywords_lists) else "").split(",") if w.strip()]
+            did = "D-" + secrets.token_hex(4)
+            c.execute(
+                "INSERT INTO deliverables (id, user_id, project_id, title, description, "
+                "keywords, ctx_hints, status) VALUES (%s, %s, %s, %s, %s, %s, '[]', 'in progress')",
+                (did, user_id, pid, t, d_desc, json.dumps(kws)),
+            )
     return RedirectResponse(url="/projects", status_code=303)
 
 
