@@ -62,6 +62,32 @@ python3 promem_orchestrator.py status        # last_*_at timestamps
 After a run, refresh `/wiki` in the browser — your SC cards fill in,
 deliverable wikis populate.
 
+## Deploy to Fly.io
+
+1. **Install flyctl** (one-time): `brew install flyctl && fly auth signup` (or `fly auth login`).
+2. **Launch the app from this repo:**
+   ```bash
+   fly launch --no-deploy --copy-config
+   ```
+   Accept the existing `fly.toml` when prompted; pick a unique app name (e.g. `promem-rohit`); skip Postgres + Redis (we use Supabase).
+3. **Set production secrets** (these are the same values from your local `.env`, minus the local-only ones):
+   ```bash
+   fly secrets set \
+     PROMEM_DB_URL="postgresql://postgres:PASSWORD@db.PROJECT.supabase.co:5432/postgres" \
+     SUPABASE_URL="https://PROJECT.supabase.co" \
+     SUPABASE_ANON_KEY="eyJ..." \
+     SUPABASE_JWT_SECRET="your-jwt-secret"
+   ```
+   Don't set `PROMEM_USER_ID`, `PROMEM_TRACKER_DB`, or `OPENAI_API_KEY` in Fly — those are
+   for the **local** pipeline run only.
+4. **Whitelist the prod URL** in Supabase Dashboard → Authentication → URL Configuration → Redirect URLs:
+   `https://YOUR-APP.fly.dev/login`
+5. **Deploy:** `fly deploy`. Wait ~2 min. Open `https://YOUR-APP.fly.dev/wiki` → redirects to `/login` → Google sign-in → wiki.
+
+The pipeline still runs **on your local machine** (it needs read access to your local
+`tracker.db`); it writes to the same Supabase Postgres so the Fly-deployed UI sees the
+same data.
+
 ## Layout
 
 ```
