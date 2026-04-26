@@ -12,6 +12,10 @@ set "TASK_NAME=ProMem Agent"
 set "INSTALL_DIR=%LOCALAPPDATA%\%APPNAME%"
 set "SRC_DIR=%~dp0"
 
+REM Anchor cwd to this script's directory so `python -m promem_agent` (later)
+REM finds the package, regardless of where the script was invoked from.
+cd /d "%SRC_DIR%"
+
 echo.
 echo ========================================================
 echo   ProMem Agent installer
@@ -87,9 +91,13 @@ if errorlevel 1 (
 
 REM --- Step 7: Write runner.bat + register Task Scheduler ----------------
 echo [7/8] Writing runner.bat and registering scheduled task...
+REM `cd /d` is critical: Task Scheduler invokes runner.bat with a
+REM Windows-default cwd (often System32) where Python wouldn't find the
+REM promem_agent package on sys.path. cd to install dir first.
 > "%INSTALL_DIR%\runner.bat" (
     echo @echo off
     echo REM ProMem runner - invoked by Task Scheduler every 5 min.
+    echo cd /d "%INSTALL_DIR%"
     echo "%INSTALL_DIR%\.venv\Scripts\python.exe" -m promem_agent run
     echo exit /b %%errorlevel%%
 )
@@ -114,8 +122,9 @@ echo.
 echo ========================================================
 echo  ProMem Agent installed!
 echo.
-echo  Status check at any time:
-echo    "%INSTALL_DIR%\.venv\Scripts\python.exe" -m promem_agent status
+echo  Status check at any time (cd first so Python finds the package):
+echo    cd /d "%INSTALL_DIR%"
+echo    .venv\Scripts\python.exe -m promem_agent status
 echo.
 echo  Log file:
 echo    %INSTALL_DIR%\agent.log
