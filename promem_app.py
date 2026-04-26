@@ -47,7 +47,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 import db
-from auth import get_current_user
+from auth import get_current_user, _verify as _verify_jwt
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("PROMEM_DATA_DIR", str(ROOT / "data")))
@@ -93,6 +93,61 @@ def _md_to_html(md: str) -> str:
 
 
 TEMPLATES.env.filters["md"] = _md_to_html
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Auth routes — login page + cookie-mint endpoint + logout
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, next: str = "/wiki") -> HTMLResponse:
+    """Public route — serves the Supabase JS client + Google sign-in button."""
+    supabase_url = os.environ.get("SUPABASE_URL", "").strip()
+    supabase_anon_key = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+    if not supabase_url or not supabase_anon_key:
+        return HTMLResponse(
+            "<h1>Misconfigured</h1>"
+            "<p>Server is missing <code>SUPABASE_URL</code> and/or "
+            "<code>SUPABASE_ANON_KEY</code>. Add both to your .env "
+            "(or fly secrets) and restart.</p>",
+            status_code=500,
+        )
+    return TEMPLATES.TemplateResponse(request, "promem_login.html", {
+        "supabase_url": supabase_url,
+        "supabase_anon_key": supabase_anon_key,
+        "next": next or "/wiki",
+    })
+
+
+class SessionIn(BaseModel):
+    access_token: str
+
+
+@app.post("/auth/session")
+def auth_set_session(req: SessionIn) -> JSONResponse:
+    """Validate the Supabase access token, mint an HttpOnly cookie.
+    Called by the login page's JS after a successful Google OAuth round-trip."""
+    try:
+        user_id = _verify_jwt(req.access_token)
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid access token: {e}")
+    response = JSONResponse({"ok": True, "user_id": user_id})
+    response.set_cookie(
+        key="promem_session",
+        value=req.access_token,
+        httponly=True,
+        secure=os.environ.get("PROMEM_SECURE_COOKIES", "false").lower() == "true",
+        samesite="lax",
+        max_age=3600,  # 1h, matches the Supabase access-token expiry
+        path="/",
+    )
+    return response
+
+
+@app.post("/auth/logout")
+def auth_logout(user_id: str = Depends(get_current_user)) -> JSONResponse:
+    response = JSONResponse({"ok": True})
+    response.delete_cookie("promem_session", path="/")
+    return response
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 from typing import Optional
+from urllib.parse import quote
 
 import jwt
 from fastapi import Cookie, Depends, HTTPException, Request, status
@@ -54,43 +55,45 @@ def _ensure_user_seeded(user_id: str) -> None:
 
 
 def _verify(token: str) -> str:
-    try:
-        payload = jwt.decode(
-            token,
-            _jwt_secret(),
-            algorithms=["HS256"],
-            audience="authenticated",
-        )
-    except jwt.PyJWTError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {e}",
-        ) from e
+    """Decode + validate a Supabase JWT, return user UUID (the `sub` claim)."""
+    payload = jwt.decode(
+        token,
+        _jwt_secret(),
+        algorithms=["HS256"],
+        audience="authenticated",
+    )
     user_id = payload.get("sub")
     if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token missing 'sub' claim",
-        )
+        raise jwt.InvalidTokenError("Token missing 'sub' claim")
     return user_id
 
 
+def _fail(request: Request, msg: str) -> None:
+    """Raise the right error: 303 → /login for browsers, 401 for APIs."""
+    accept = (request.headers.get("accept") or "").lower()
+    if "text/html" in accept:
+        next_url = quote(str(request.url), safe="")
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER,
+            headers={"Location": f"/login?next={next_url}"},
+        )
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=msg)
+
+
 def get_current_user(
+    request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     promem_session: Optional[str] = Cookie(default=None),
 ) -> str:
     """FastAPI dependency: verify JWT, return user_id (UUID as string).
-    Raises 401 if no valid token in either Authorization header or cookie."""
-    token = None
-    if creds is not None:
-        token = creds.credentials
-    elif promem_session:
-        token = promem_session
+    Browsers without auth get redirected to /login?next=<original-url>;
+    API clients get 401."""
+    token = creds.credentials if creds is not None else promem_session
     if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated — provide Authorization: Bearer or promem_session cookie",
-        )
-    user_id = _verify(token)
+        _fail(request, "Not authenticated — provide Authorization: Bearer or promem_session cookie")
+    try:
+        user_id = _verify(token)
+    except jwt.PyJWTError as e:
+        _fail(request, f"Invalid token: {e}")
     _ensure_user_seeded(user_id)
     return user_id
