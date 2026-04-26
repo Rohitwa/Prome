@@ -47,20 +47,9 @@ def _cutoff(user_id: str) -> str:
     return last.isoformat()
 
 
-def sync_work_pages(tracker_db: str | Path = DEFAULT_TRACKER) -> dict:
-    """Read new context_1 rows and insert them into prome.work_pages.
-    Returns counts. Does not write to tracker.db."""
-    user_id = db.user_id()
-    tracker_db = Path(tracker_db)
-    if not tracker_db.exists():
-        return {
-            "ok": False, "phase": "sync", "skipped": True,
-            "reason": f"tracker.db not found at {tracker_db}",
-            "n_seen": 0, "n_inserted": 0,
-        }
-
-    cutoff = _cutoff(user_id)
-
+def _fetch_segments_from_tracker(tracker_db: Path, cutoff: str) -> list:
+    """Read tracker.db.context_1 rows newer than cutoff. Returns sqlite Row
+    objects exposing r['col'] access — same shape as the cloud fetcher."""
     tconn = sqlite3.connect(f"file:{tracker_db}?mode=ro", uri=True)
     tconn.row_factory = sqlite3.Row
     rows = list(tconn.execute("""
@@ -72,6 +61,51 @@ def sync_work_pages(tracker_db: str | Path = DEFAULT_TRACKER) -> dict:
         ORDER BY timestamp_start
     """, (cutoff,)))
     tconn.close()
+    return rows
+
+
+def _fetch_segments_from_cloud(user_id: str, cutoff: str) -> list:
+    """Read tracker_segments rows newer than cutoff for this user. Returns
+    psycopg dict_row dicts — same r['col'] interface as the tracker fetcher,
+    column shape (incl. context AS ctx_label alias) intentionally identical
+    so the downstream loop doesn't branch on source."""
+    with db.conn() as c:
+        rows = c.execute("""
+            SELECT id, target_segment_id, timestamp_start, timestamp_end,
+                   target_segment_length_secs, short_title, window_name,
+                   detailed_summary, supercontext, context AS ctx_label
+            FROM tracker_segments
+            WHERE user_id = %s AND timestamp_start > %s
+            ORDER BY timestamp_start
+        """, (user_id, cutoff)).fetchall()
+    return rows
+
+
+def sync_work_pages(tracker_db: str | Path = DEFAULT_TRACKER) -> dict:
+    """Read new segments and insert them into prome.work_pages.
+
+    Source is controlled by PROMEM_SYNC_SOURCE:
+      "cloud"  → read from Postgres tracker_segments (Phase 4a).
+      anything else (default) → read from local SQLite tracker.db.context_1.
+
+    Returns counts. Does not write to tracker.db.
+    """
+    user_id = db.user_id()
+    cutoff = _cutoff(user_id)
+    source = os.environ.get("PROMEM_SYNC_SOURCE", "tracker").strip().lower()
+
+    if source == "cloud":
+        rows = _fetch_segments_from_cloud(user_id, cutoff)
+    else:
+        source = "tracker"  # normalize: any non-"cloud" value runs tracker path
+        tracker_db = Path(tracker_db)
+        if not tracker_db.exists():
+            return {
+                "ok": False, "phase": "sync", "skipped": True,
+                "reason": f"tracker.db not found at {tracker_db}",
+                "n_seen": 0, "n_inserted": 0, "source": source,
+            }
+        rows = _fetch_segments_from_tracker(tracker_db, cutoff)
 
     n_seen = len(rows)
     n_inserted = 0
@@ -103,4 +137,5 @@ def sync_work_pages(tracker_db: str | Path = DEFAULT_TRACKER) -> dict:
     return {
         "ok": True, "phase": "sync", "skipped": False,
         "cutoff": cutoff, "n_seen": n_seen, "n_inserted": n_inserted,
+        "source": source,
     }

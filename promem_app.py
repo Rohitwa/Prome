@@ -21,6 +21,7 @@ APIs (JSON):
   POST /api/deliverables/<id>/match/<page_id>/unpin
   POST /api/orchestrator/run                        — disabled in cloud (Phase 4+)
   GET  /api/orchestrator/status                     — disabled in cloud (Phase 4+)
+  POST /api/upload-segments                         {segments: [...]} (Phase 4a)
 
 Run:
   PROMEM_DB_URL="postgresql://..."  \
@@ -551,6 +552,23 @@ class FeedbackIn(BaseModel):
     note: str = ""
 
 
+class TrackerSegmentIn(BaseModel):
+    id: str
+    target_segment_id: Optional[str] = None
+    timestamp_start: str
+    timestamp_end: Optional[str] = None
+    target_segment_length_secs: int = 0
+    short_title: Optional[str] = None
+    window_name: Optional[str] = None
+    detailed_summary: Optional[str] = None
+    supercontext: Optional[str] = None
+    context: Optional[str] = None
+
+
+class UploadSegmentsIn(BaseModel):
+    segments: list[TrackerSegmentIn]
+
+
 @app.post("/api/projects")
 def api_create_project(p: ProjectIn, user_id: str = Depends(get_current_user)) -> dict:
     pid = "P-" + secrets.token_hex(4)
@@ -640,6 +658,47 @@ def api_orch_status(user_id: str = Depends(get_current_user)) -> dict:
         ).fetchone()
     return {**(dict(state) if state else {}), "should_run_now": False,
             "reason": "cloud-side runs disabled (Phase 4+)"}
+
+
+# Per-request cap. Tracker.db typically yields hundreds of new segments per
+# day; 1000 leaves comfortable headroom and surfaces agent bugs as 413s
+# instead of silently truncating.
+UPLOAD_SEGMENTS_MAX = 1000
+
+
+@app.post("/api/upload-segments")
+def api_upload_segments(
+    payload: UploadSegmentsIn,
+    user_id: str = Depends(get_current_user),
+) -> dict:
+    n_received = len(payload.segments)
+    if n_received == 0:
+        return {"ok": True, "n_received": 0, "n_inserted": 0}
+    if n_received > UPLOAD_SEGMENTS_MAX:
+        raise HTTPException(
+            status_code=413,
+            detail=f"max {UPLOAD_SEGMENTS_MAX} segments per request "
+                   f"(received {n_received}); chunk client-side",
+        )
+    rows = [
+        (user_id, s.id, s.target_segment_id, s.timestamp_start, s.timestamp_end,
+         s.target_segment_length_secs, s.short_title, s.window_name,
+         s.detailed_summary, s.supercontext, s.context)
+        for s in payload.segments
+    ]
+    with db.conn() as c:
+        cur = c.cursor()
+        cur.executemany(
+            "INSERT INTO tracker_segments "
+            "(user_id, id, target_segment_id, timestamp_start, timestamp_end, "
+            " target_segment_length_secs, short_title, window_name, "
+            " detailed_summary, supercontext, context) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (user_id, id) DO NOTHING",
+            rows,
+        )
+        n_inserted = cur.rowcount
+    return {"ok": True, "n_received": n_received, "n_inserted": n_inserted}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
