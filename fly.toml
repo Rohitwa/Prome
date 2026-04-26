@@ -1,34 +1,37 @@
-# Fly.io deployment config for ProMem.
-# Pick your own app name during `fly launch` — Fly will prompt and rewrite it.
+# fly.toml app configuration file generated for promem on 2026-04-26T09:34:35+05:30
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "promem"
-primary_region = "bom"   # Mumbai. Use "sin"/"sea"/"iad" if you'd prefer elsewhere.
+app = 'promem'
+primary_region = 'bom'
 
 [build]
-  # uses the repo-root Dockerfile
 
 [env]
-  # In production we're behind Fly's HTTPS proxy, so the session cookie
-  # gets the Secure flag. Override locally with PROMEM_SECURE_COOKIES=false.
-  PROMEM_SECURE_COOKIES = "true"
-  PROMEM_DATA_DIR = "/data"
+  PROMEM_DATA_DIR = '/data'
+  PROMEM_SECURE_COOKIES = 'true'
+
+[[mounts]]
+  source = 'data'
+  destination = '/data'
 
 [http_service]
   internal_port = 8888
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
-  processes = ["app"]
+  processes = ['app']
 
   [[http_service.checks]]
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "10s"
-    method = "GET"
-    path = "/login"   # public, doesn't require auth — good liveness check
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/login'
 
 [[vm]]
-  cpu_kind = "shared"
+  cpu_kind = 'shared'
   cpus = 1
-  memory_mb = 512   # 256 is tight once psycopg_pool warms up; 512 is comfortable
+  memory_mb = 512
