@@ -14,11 +14,32 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
+
+
+# Load .env once on first import — anything that imports `db` (auth, app, the
+# orchestrator) gets PROMEM_DB_URL / SUPABASE_JWT_SECRET / OPENAI_API_KEY
+# without each module reimplementing the loader.
+def _load_env_file() -> None:
+    env_file = Path(__file__).resolve().parent / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k, v = k.strip(), v.strip().strip('"').strip("'")
+        if k:
+            os.environ.setdefault(k, v)
+
+
+_load_env_file()
 
 
 def _db_url() -> str:

@@ -54,13 +54,8 @@ DATA_DIR = Path(os.environ.get("PROMEM_DATA_DIR", str(ROOT / "data")))
 TRACKER = Path(os.environ.get("PROMEM_TRACKER_DB", str(DATA_DIR / "tracker.db")))
 TEMPLATES = Jinja2Templates(directory=str(ROOT / "templates"))
 
-# Load .env on startup — provides PROMEM_DB_URL, SUPABASE_JWT_SECRET, etc.
-ENV_FILE = ROOT / ".env"
-if ENV_FILE.exists():
-    for _ln in ENV_FILE.read_text().splitlines():
-        if "=" in _ln and not _ln.startswith("#"):
-            _k, _, _v = _ln.partition("=")
-            os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+# .env loading happens in db.py (imported above) so anything pulling in
+# auth/db gets the env vars without duplicating the loader.
 
 app = FastAPI(title="ProMem")
 
