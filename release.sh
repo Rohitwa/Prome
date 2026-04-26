@@ -136,6 +136,13 @@ sed 's/^/    /' "$MANIFEST_PATH"
 # ── 5. Upload to Fly /data via sftp ───────────────────────────────────────
 echo
 echo "→ Uploading to Fly /data via flyctl ssh sftp ..."
+# Wake the Fly machine if auto-stopped — otherwise ssh sftp errors with
+# 'app promem has no started VMs'. A simple HTTP GET against any public
+# route triggers Fly's auto_start_machines (~2s wake on cold start).
+echo "  (waking Fly machine if stopped...)"
+curl -s -o /dev/null https://promem.fly.dev/agent/manifest || true
+sleep 3
+
 # flyctl sftp `put` won't overwrite (and sftp shell has no `rm`). Use
 # `ssh console -C` to delete via the remote shell first. Failures are
 # fine (file may not exist on first-time upload).
