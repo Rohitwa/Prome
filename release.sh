@@ -67,10 +67,11 @@ import re, sys
 version = sys.argv[1]
 p = "promem_agent/__init__.py"
 src = open(p).read()
-new = re.sub(r'__version__ = "[^"]+"', f'__version__ = "{version}"', src)
-if new == src:
+new, n = re.subn(r'__version__ = "[^"]+"', f'__version__ = "{version}"', src)
+if n == 0:
     sys.exit("could not find __version__ line in " + p)
-open(p, "w").write(new)
+if new != src:
+    open(p, "w").write(new)
 PY
 
 ACTUAL=$(python3 -c "from promem_agent import __version__; print(__version__)")
