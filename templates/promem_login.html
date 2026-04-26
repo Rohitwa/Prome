@@ -81,19 +81,29 @@
   }
 
   async function settleSession() {
-    // Called both on page load (after redirect from Supabase/Google) and
-    // after a fresh sign-in. If the Supabase JS client found a session in
-    // the URL fragment (or persisted from a prior login), POST the access
-    // token to the server so it can mint the HttpOnly cookie.
-    const { data, error } = await supabase.auth.getSession()
-    if (error) { setStatus('Auth error: ' + error.message, true); return false }
-    if (!data.session) return false
+    // Pull the access token straight from the URL — works regardless of
+    // whether the Supabase client picked it up. Handles both implicit
+    // (#access_token=...) and PKCE (?code=...) redirect shapes.
+    const hashParams = new URLSearchParams(window.location.hash.slice(1))
+    let token = hashParams.get('access_token')
+
+    if (!token) {
+      const code = new URLSearchParams(window.location.search).get('code')
+      if (code) {
+        setStatus('Exchanging code…')
+        const { data, error } = await supabase.auth.exchangeCodeForSession(code)
+        if (error) { setStatus('Auth error: ' + error.message, true); return false }
+        token = data && data.session ? data.session.access_token : null
+      }
+    }
+    if (!token) return false  // nothing to do, just show the sign-in button
+
     setStatus('Signing you in…')
     try {
       const r = await fetch('/auth/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: data.session.access_token }),
+        body: JSON.stringify({ access_token: token }),
       })
       if (!r.ok) {
         const body = await r.text()
@@ -104,7 +114,7 @@
       setStatus('Network error: ' + e.message, true)
       return false
     }
-    // Clean the URL fragment + redirect to the page they wanted
+    // Strip the fragment / code from the URL bar then go where they wanted.
     history.replaceState({}, document.title, window.location.pathname)
     window.location.href = NEXT || '/wiki'
     return true
