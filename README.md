@@ -29,19 +29,23 @@ Then open `http://localhost:8888/wiki` — you'll be redirected to
    to Google Cloud OAuth client → Authorized redirect URIs.
 4. **Whitelist** — add `http://localhost:8888/login` (and your prod URL)
    to Supabase Auth → URL Configuration → Redirect URLs.
-5. **`.env`** — copy these from Supabase Dashboard:
+5. **`.env`** — copy these from Supabase Dashboard. **Do not put `#` comments
+   on the same line as a value** — the env loader treats `# foo` after an
+   unquoted value as part of the value:
    ```bash
    PROMEM_DB_URL="postgresql://postgres:PASSWORD@db.PROJECT.supabase.co:5432/postgres"
    SUPABASE_URL="https://PROJECT.supabase.co"
    SUPABASE_ANON_KEY="eyJhbGciOi..."
    SUPABASE_JWT_SECRET="your-jwt-secret"
-   OPENAI_API_KEY="sk-..."          # for classify/synthesize phases only
-   PROMEM_USER_ID="<your auth.users UUID>"  # for running the pipeline locally
+   OPENAI_API_KEY="sk-..."
+   PROMEM_USER_ID="00000000-0000-0000-0000-000000000000"
    PROMEM_TRACKER_DB="/Users/you/.productivity-tracker/tracker.db"
    ```
 
-   Find `PROMEM_USER_ID` in Supabase → Authentication → Users → click
-   your user → "User UID".
+   `PROMEM_USER_ID`: Supabase → Authentication → Users → click your user
+   → "User UID" (a UUID). `OPENAI_API_KEY`: needed only for the nightly
+   classify/synthesize phases. `PROMEM_TRACKER_DB`: optional — defaults
+   to `${PROMEM_DATA_DIR}/tracker.db`.
 
 ## Running the pipeline
 

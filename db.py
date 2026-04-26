@@ -34,7 +34,17 @@ def _load_env_file() -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, _, v = line.partition("=")
-        k, v = k.strip(), v.strip().strip('"').strip("'")
+        v = v.strip()
+        # If value is quoted, take the content between the quotes; that
+        # naturally drops any trailing inline comment (`KEY="val"  # note`).
+        # If unquoted, drop anything after the first ` #` (space-hash).
+        if (v.startswith('"') and '"' in v[1:]):
+            v = v[1:].split('"', 1)[0]
+        elif (v.startswith("'") and "'" in v[1:]):
+            v = v[1:].split("'", 1)[0]
+        else:
+            v = v.split(" #", 1)[0].rstrip()
+        k = k.strip()
         if k:
             os.environ.setdefault(k, v)
 
