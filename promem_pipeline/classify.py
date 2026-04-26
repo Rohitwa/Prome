@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,6 +19,9 @@ from pathlib import Path
 
 import httpx
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import db
+
 MODEL = os.environ.get("PROME_CLASSIFY_MODEL", "gpt-4o-mini")
 BATCH_SIZE = 10
 CONCURRENCY = 8
@@ -27,9 +29,6 @@ LLM_TIMEOUT = 60.0
 LLM_MAX_RETRIES = 2
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# OpenAI client (mirror of existing _call_openai pattern)
-# ──────────────────────────────────────────────────────────────────────────────
 def _llm_json(prompt: str) -> dict:
     """Call gpt-4o-mini with response_format=json_object. Returns parsed dict or {}."""
     key = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -64,9 +63,6 @@ def _llm_json(prompt: str) -> dict:
     return {}
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Prompt
-# ──────────────────────────────────────────────────────────────────────────────
 def _build_prompt(allowed_scs: list[str], pages: list[dict]) -> str:
     sc_list = "\n".join(f"- {s}" for s in allowed_scs)
     activities = json.dumps([
@@ -90,109 +86,103 @@ Respond with a strict JSON object — no prose, no markdown:
 {{"results": [{{"id": "<input id>", "sc": "<label>", "ctx": "<2-5 words>", "propose_new": <bool>, "why": "<one short sentence>"}}]}}"""
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DB helpers
-# ──────────────────────────────────────────────────────────────────────────────
-def _allowed_scs(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute("SELECT label FROM sc_registry ORDER BY is_keep DESC, label").fetchall()
-    return [r[0] for r in rows]
+def _allowed_scs(c, user_id: str) -> list[str]:
+    rows = c.execute(
+        "SELECT label FROM sc_registry WHERE user_id=%s ORDER BY is_keep DESC, label",
+        (user_id,),
+    ).fetchall()
+    return [r["label"] for r in rows]
 
 
-def _fetch_unclassified(conn: sqlite3.Connection, limit: int | None = None) -> list[dict]:
+def _fetch_unclassified(c, user_id: str, limit: int | None = None) -> list[dict]:
     sql = ("SELECT id, title, summary FROM work_pages "
-           "WHERE sc_label='' AND COALESCE(is_unfiled,0)=0 "
+           "WHERE user_id=%s AND sc_label='' AND COALESCE(is_unfiled,0)=0 "
            "ORDER BY date_local DESC")
+    params: tuple = (user_id,)
     if limit:
-        sql += f" LIMIT {limit}"
-    return [dict(r) for r in conn.execute(sql).fetchall()]
+        sql += " LIMIT %s"
+        params = (user_id, limit)
+    return [dict(r) for r in c.execute(sql, params).fetchall()]
 
 
-def _apply_classification(conn: sqlite3.Connection, page_id: str, sc: str,
+def _apply_classification(c, user_id: str, page_id: str, sc: str,
                            ctx: str, propose_new: bool, why: str,
                            known_scs: set[str]) -> str:
     """Returns: 'classified' | 'pending'."""
     now = datetime.now().isoformat(timespec="seconds")
     if propose_new or sc not in known_scs:
-        # Propose new SC — page parked in unfiled, accumulate proposal in pending_sc
-        existing = conn.execute(
+        existing = c.execute(
             "SELECT id, proposal_count, example_page_ids FROM pending_sc "
-            "WHERE proposed_label=? AND status='pending'",
-            (sc,),
+            "WHERE user_id=%s AND proposed_label=%s AND status='pending'",
+            (user_id, sc),
         ).fetchone()
         if existing:
             try:
-                examples = json.loads(existing[2] or "[]")
+                examples = json.loads(existing["example_page_ids"] or "[]")
             except Exception:
                 examples = []
             if page_id not in examples:
                 examples.append(page_id)
-            conn.execute(
-                "UPDATE pending_sc SET proposal_count=?, example_page_ids=?, last_seen=? WHERE id=?",
-                (existing[1] + 1, json.dumps(examples[:10]), now, existing[0]),
+            c.execute(
+                "UPDATE pending_sc SET proposal_count=%s, example_page_ids=%s, "
+                "last_seen=%s WHERE id=%s AND user_id=%s",
+                (existing["proposal_count"] + 1, json.dumps(examples[:10]),
+                 now, existing["id"], user_id),
             )
         else:
-            conn.execute(
-                "INSERT INTO pending_sc (proposed_label, why, example_page_ids, "
-                "proposal_count, first_seen, last_seen, status) "
-                "VALUES (?, ?, ?, 1, ?, ?, 'pending')",
-                (sc, why or "", json.dumps([page_id]), now, now),
+            c.execute(
+                "INSERT INTO pending_sc (user_id, proposed_label, why, "
+                "example_page_ids, proposal_count, first_seen, last_seen, status) "
+                "VALUES (%s, %s, %s, %s, 1, %s, %s, 'pending')",
+                (user_id, sc, why or "", json.dumps([page_id]), now, now),
             )
-        conn.execute(
-            "UPDATE work_pages SET is_unfiled=1, ctx_label=?, classified_at=? WHERE id=?",
-            (ctx or "", now, page_id),
+        c.execute(
+            "UPDATE work_pages SET is_unfiled=1, ctx_label=%s, classified_at=%s "
+            "WHERE id=%s AND user_id=%s",
+            (ctx or "", now, page_id, user_id),
         )
         return "pending"
 
-    conn.execute(
-        "UPDATE work_pages SET sc_label=?, ctx_label=?, classified_at=? WHERE id=?",
-        (sc, ctx or "", now, page_id),
+    c.execute(
+        "UPDATE work_pages SET sc_label=%s, ctx_label=%s, classified_at=%s "
+        "WHERE id=%s AND user_id=%s",
+        (sc, ctx or "", now, page_id, user_id),
     )
     return "classified"
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────────────────────────────────────
 def _classify_batch(allowed_scs: list[str], batch: list[dict]) -> list[dict]:
     prompt = _build_prompt(allowed_scs, batch)
     resp = _llm_json(prompt)
     return resp.get("results", []) if isinstance(resp, dict) else []
 
 
-def classify_all(prome_db: str | Path, limit: int | None = None,
+def classify_all(limit: int | None = None,
                  batch_size: int = BATCH_SIZE,
                  concurrency: int = CONCURRENCY) -> dict:
-    prome_db = Path(prome_db)
-    conn = sqlite3.connect(prome_db, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    allowed = _allowed_scs(conn)
-    known = set(allowed)
-    pages = _fetch_unclassified(conn, limit=limit)
-    conn.close()
+    user_id = db.user_id()
+    with db.conn() as c:
+        allowed = _allowed_scs(c, user_id)
+        known = set(allowed)
+        pages = _fetch_unclassified(c, user_id, limit=limit)
 
     if not pages:
         return {"ok": True, "phase": "classify", "skipped": True,
                 "reason": "no unclassified pages", "n_total": 0}
 
-    # Build batches
     batches = [pages[i:i + batch_size] for i in range(0, len(pages), batch_size)]
-
     n_classified = 0
     n_pending = 0
     n_failed = 0
     started = time.time()
 
-    # Concurrent LLM calls; DB writes serialised (one connection per process)
+    # Concurrent LLM calls; DB writes serialised on a single pooled connection.
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
         futures = {ex.submit(_classify_batch, allowed, b): b for b in batches}
-        # Reopen DB for writes only (avoid sharing across threads)
-        wconn = sqlite3.connect(prome_db, timeout=30.0)
-        wconn.row_factory = sqlite3.Row
-        try:
+        with db.conn() as wc:
             for i, fut in enumerate(as_completed(futures), 1):
                 batch = futures[fut]
                 results = fut.result()
-                # Index results by id
                 by_id = {r.get("id"): r for r in results if r.get("id")}
                 for p in batch:
                     r = by_id.get(p["id"])
@@ -207,13 +197,12 @@ def classify_all(prome_db: str | Path, limit: int | None = None,
                         n_failed += 1
                         continue
                     outcome = _apply_classification(
-                        wconn, p["id"], sc, ctx, propose, why, known,
+                        wc, user_id, p["id"], sc, ctx, propose, why, known,
                     )
                     if outcome == "classified":
                         n_classified += 1
                     elif outcome == "pending":
                         n_pending += 1
-                wconn.commit()
                 if i % 10 == 0 or i == len(batches):
                     elapsed = time.time() - started
                     rate = (n_classified + n_pending) / max(1, elapsed)
@@ -221,8 +210,6 @@ def classify_all(prome_db: str | Path, limit: int | None = None,
                           f"({n_classified} ok, {n_pending} pending, {n_failed} failed) "
                           f"{rate:.1f} pages/sec",
                           flush=True)
-        finally:
-            wconn.close()
 
     return {
         "ok": True, "phase": "classify", "skipped": False,
@@ -233,14 +220,5 @@ def classify_all(prome_db: str | Path, limit: int | None = None,
 
 
 if __name__ == "__main__":
-    # CLI: python3 simple/classify.py [limit]
-    DB = Path(__file__).resolve().parent.parent / "data" / "prome.db"
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    # Source .env (for OPENAI_API_KEY)
-    envf = Path(__file__).resolve().parent.parent / ".env"
-    if envf.exists():
-        for line in envf.read_text().splitlines():
-            if "=" in line and not line.startswith("#"):
-                k, _, v = line.partition("=")
-                os.environ.setdefault(k.strip(), v.strip())
-    print(json.dumps(classify_all(DB, limit=limit), indent=2))
+    print(json.dumps(classify_all(limit=limit), indent=2))

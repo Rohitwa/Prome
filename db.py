@@ -87,6 +87,21 @@ def close_pool() -> None:
         _pool = None
 
 
+def user_id() -> str:
+    """Return the user UUID for the local pipeline run. Raises a helpful
+    error if PROMEM_USER_ID isn't set — the pipeline is multi-user-aware
+    now, so it must know which Supabase user to write data under."""
+    uid = os.environ.get("PROMEM_USER_ID", "").strip()
+    if not uid:
+        raise RuntimeError(
+            "PROMEM_USER_ID is not set. Find your UUID in Supabase Dashboard → "
+            "Authentication → Users → click your user → 'User UID' (a UUID), "
+            "then add to .env:\n\n"
+            "  PROMEM_USER_ID=2d4a210d-81ae-49f8-...\n"
+        )
+    return uid
+
+
 if __name__ == "__main__":
     # Quick connectivity check.
     with conn() as c:

@@ -13,29 +13,28 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import sys
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import db
 
 MODEL = os.environ.get("PROME_SYNTHESIS_MODEL", "gpt-4o-mini")
 TIMEOUT = 90.0
 RETRIES = 2
 CACHE_TTL_HOURS = 24
 DRIFT_PCT = 0.10
-PAGES_FOR_SC = 60        # cap pages fed into SC prompt to stay under context
+PAGES_FOR_SC = 60
 PAGES_FOR_DELIV = 40
 CONCURRENCY = 4
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# OpenAI helper
-# ──────────────────────────────────────────────────────────────────────────────
 def _llm_json(prompt: str, max_tokens: int = 1800) -> dict:
     key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not key:
@@ -68,9 +67,6 @@ def _llm_json(prompt: str, max_tokens: int = 1800) -> dict:
     return {}
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Prompts
-# ──────────────────────────────────────────────────────────────────────────────
 def _build_sc_prompt(label: str, pages: list[dict], ctxs: list[tuple[str, int]]) -> str:
     page_lines = "\n".join(
         f"- [{p['date_local']}] ({p.get('ctx_label') or '—'}) {(p.get('title') or '')[:120]}"
@@ -134,9 +130,6 @@ Output strict JSON:
 3-5 sections. No prose outside the JSON."""
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DB helpers
-# ──────────────────────────────────────────────────────────────────────────────
 def _is_stale(generated_at: str | None, source_count_old: int | None, current_count: int) -> bool:
     if not generated_at or source_count_old is None:
         return True
@@ -152,26 +145,29 @@ def _is_stale(generated_at: str | None, source_count_old: int | None, current_co
     return drift >= DRIFT_PCT
 
 
-def _sc_inputs(conn: sqlite3.Connection) -> list[dict]:
-    """Return one entry per kept SC with its pages and ctx counts."""
+def _sc_inputs(c, user_id: str) -> list[dict]:
     out = []
-    sc_rows = conn.execute(
-        "SELECT label FROM sc_registry WHERE is_keep=1"
+    sc_rows = c.execute(
+        "SELECT label FROM sc_registry WHERE user_id=%s AND is_keep=1",
+        (user_id,),
     ).fetchall()
-    for (label,) in sc_rows:
-        pages = [dict(r) for r in conn.execute("""
+    for row in sc_rows:
+        label = row["label"]
+        pages = [dict(r) for r in c.execute("""
             SELECT id, title, date_local, ctx_label
             FROM work_pages
-            WHERE sc_label=? AND COALESCE(is_archived,0)=0 AND COALESCE(is_unfiled,0)=0
-            ORDER BY date_local DESC LIMIT ?
-        """, (label, PAGES_FOR_SC * 3)).fetchall()]
+            WHERE user_id=%s AND sc_label=%s
+              AND COALESCE(is_archived,0)=0 AND COALESCE(is_unfiled,0)=0
+            ORDER BY date_local DESC LIMIT %s
+        """, (user_id, label, PAGES_FOR_SC * 3)).fetchall()]
         ctx_counter: Counter = Counter()
-        for r in conn.execute(
-            "SELECT ctx_label, COUNT(*) FROM work_pages "
-            "WHERE sc_label=? AND COALESCE(is_archived,0)=0 GROUP BY ctx_label",
-            (label,),
+        for r in c.execute(
+            "SELECT ctx_label, COUNT(*) AS n FROM work_pages "
+            "WHERE user_id=%s AND sc_label=%s AND COALESCE(is_archived,0)=0 "
+            "GROUP BY ctx_label",
+            (user_id, label),
         ).fetchall():
-            ctx_counter[r[0] or "—"] = r[1]
+            ctx_counter[r["ctx_label"] or "—"] = r["n"]
         out.append({
             "label": label,
             "pages": pages,
@@ -181,30 +177,29 @@ def _sc_inputs(conn: sqlite3.Connection) -> list[dict]:
     return out
 
 
-def _deliv_inputs(conn: sqlite3.Connection) -> list[dict]:
-    """Return one entry per deliverable with its matched pages + stats."""
+def _deliv_inputs(c, user_id: str) -> list[dict]:
     out = []
-    rows = conn.execute("""
+    rows = c.execute("""
         SELECT d.id, d.project_id, d.title, d.description, d.keywords,
                p.name AS project_name
         FROM deliverables d
-        JOIN projects p ON p.id = d.project_id
-        WHERE d.status != 'archived'
-    """).fetchall()
+        JOIN projects p ON p.id = d.project_id AND p.user_id = d.user_id
+        WHERE d.user_id=%s AND d.status != 'archived'
+    """, (user_id,)).fetchall()
     for r in rows:
         try:
-            kws = json.loads(r[4] or "[]")
+            kws = json.loads(r["keywords"] or "[]")
         except Exception:
             kws = []
-        match_pages = [dict(rr) for rr in conn.execute("""
+        match_pages = [dict(rr) for rr in c.execute("""
             SELECT wp.id, wp.title, wp.date_local, wp.total_minutes,
                    dm.score, dm.reasons
             FROM deliverable_match dm
-            JOIN work_pages wp ON wp.id = dm.page_id
-            WHERE dm.deliverable_id = ?
+            JOIN work_pages wp ON wp.id = dm.page_id AND wp.user_id = dm.user_id
+            WHERE dm.user_id=%s AND dm.deliverable_id = %s
             ORDER BY dm.score DESC, wp.date_local DESC
-            LIMIT ?
-        """, (r[0], PAGES_FOR_DELIV * 2)).fetchall()]
+            LIMIT %s
+        """, (user_id, r["id"], PAGES_FOR_DELIV * 2)).fetchall()]
         if not match_pages:
             stats = {"n_pages": 0, "minutes": 0, "days_active": 0, "last": None}
         else:
@@ -216,17 +211,16 @@ def _deliv_inputs(conn: sqlite3.Connection) -> list[dict]:
                 "last": dates[-1] if dates else None,
             }
         out.append({
-            "id": r[0], "project_id": r[1], "project_name": r[5],
-            "title": r[2], "description": r[3] or "", "keywords": kws,
+            "id": r["id"], "project_id": r["project_id"],
+            "project_name": r["project_name"],
+            "title": r["title"], "description": r["description"] or "",
+            "keywords": kws,
             "matched_pages": match_pages, "stats": stats,
             "current_count": stats["n_pages"],
         })
     return out
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────────────────────────────────────
 def _synth_one_sc(item: dict) -> tuple[str, dict]:
     prompt = _build_sc_prompt(item["label"], item["pages"], item["ctxs"])
     return item["label"], _llm_json(prompt, max_tokens=1800)
@@ -237,39 +231,38 @@ def _synth_one_deliv(item: dict) -> tuple[str, dict]:
     return item["id"], _llm_json(prompt, max_tokens=1500)
 
 
-def synthesize_all(prome_db: str | Path, force: bool = False) -> dict:
-    prome_db = Path(prome_db)
-    conn = sqlite3.connect(prome_db, timeout=60.0)
-    conn.row_factory = sqlite3.Row
+def synthesize_all(force: bool = False) -> dict:
+    user_id = db.user_id()
     now = datetime.now().isoformat(timespec="seconds")
 
-    # Decide which SC + deliverable items need re-generation
-    sc_items = _sc_inputs(conn)
-    sc_to_synth = []
-    for item in sc_items:
-        cache = conn.execute(
-            "SELECT prose_json, source_page_count, generated_at FROM sc_wiki_cache "
-            "WHERE sc_label = ?", (item["label"],),
-        ).fetchone()
-        old_count = cache["source_page_count"] if cache else None
-        if force or _is_stale(cache["generated_at"] if cache else None,
-                              old_count, item["current_count"]):
-            sc_to_synth.append(item)
+    with db.conn() as c:
+        sc_items = _sc_inputs(c, user_id)
+        sc_to_synth = []
+        for item in sc_items:
+            cache = c.execute(
+                "SELECT prose_json, source_page_count, generated_at FROM sc_wiki_cache "
+                "WHERE user_id=%s AND sc_label=%s",
+                (user_id, item["label"]),
+            ).fetchone()
+            old_count = cache["source_page_count"] if cache else None
+            if force or _is_stale(cache["generated_at"] if cache else None,
+                                  old_count, item["current_count"]):
+                sc_to_synth.append(item)
 
-    deliv_items = _deliv_inputs(conn)
-    deliv_to_synth = []
-    for item in deliv_items:
-        cache = conn.execute(
-            "SELECT prose_json, source_page_count, generated_at FROM deliverable_wiki_cache "
-            "WHERE deliverable_id = ?", (item["id"],),
-        ).fetchone()
-        old_count = cache["source_page_count"] if cache else None
-        if force or _is_stale(cache["generated_at"] if cache else None,
-                              old_count, item["current_count"]):
-            deliv_to_synth.append(item)
+        deliv_items = _deliv_inputs(c, user_id)
+        deliv_to_synth = []
+        for item in deliv_items:
+            cache = c.execute(
+                "SELECT prose_json, source_page_count, generated_at FROM deliverable_wiki_cache "
+                "WHERE user_id=%s AND deliverable_id=%s",
+                (user_id, item["id"]),
+            ).fetchone()
+            old_count = cache["source_page_count"] if cache else None
+            if force or _is_stale(cache["generated_at"] if cache else None,
+                                  old_count, item["current_count"]):
+                deliv_to_synth.append(item)
 
     if not sc_to_synth and not deliv_to_synth:
-        conn.close()
         return {"ok": True, "phase": "synthesis", "skipped": True,
                 "reason": "all caches fresh", "n_sc": 0, "n_deliv": 0}
 
@@ -309,30 +302,29 @@ def synthesize_all(prome_db: str | Path, force: bool = False) -> dict:
             else:
                 deliv_results[key] = data
 
-    # Persist caches
-    for label, data in sc_results.items():
-        item = next(i for i in sc_to_synth if i["label"] == label)
-        conn.execute("""
-            INSERT INTO sc_wiki_cache (sc_label, prose_json, source_page_count, generated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(sc_label) DO UPDATE SET
-              prose_json=excluded.prose_json,
-              source_page_count=excluded.source_page_count,
-              generated_at=excluded.generated_at
-        """, (label, json.dumps(data), item["current_count"], now))
-    for did, data in deliv_results.items():
-        item = next(i for i in deliv_to_synth if i["id"] == did)
-        conn.execute("""
-            INSERT INTO deliverable_wiki_cache (deliverable_id, prose_json,
-                                                source_page_count, generated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(deliverable_id) DO UPDATE SET
-              prose_json=excluded.prose_json,
-              source_page_count=excluded.source_page_count,
-              generated_at=excluded.generated_at
-        """, (did, json.dumps(data), item["current_count"], now))
-    conn.commit()
-    conn.close()
+    with db.conn() as c:
+        for label, data in sc_results.items():
+            item = next(i for i in sc_to_synth if i["label"] == label)
+            c.execute("""
+                INSERT INTO sc_wiki_cache (user_id, sc_label, prose_json,
+                                           source_page_count, generated_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, sc_label) DO UPDATE SET
+                  prose_json=EXCLUDED.prose_json,
+                  source_page_count=EXCLUDED.source_page_count,
+                  generated_at=EXCLUDED.generated_at
+            """, (user_id, label, json.dumps(data), item["current_count"], now))
+        for did, data in deliv_results.items():
+            item = next(i for i in deliv_to_synth if i["id"] == did)
+            c.execute("""
+                INSERT INTO deliverable_wiki_cache (deliverable_id, user_id,
+                       prose_json, source_page_count, generated_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (deliverable_id) DO UPDATE SET
+                  prose_json=EXCLUDED.prose_json,
+                  source_page_count=EXCLUDED.source_page_count,
+                  generated_at=EXCLUDED.generated_at
+            """, (did, user_id, json.dumps(data), item["current_count"], now))
 
     return {
         "ok": True, "phase": "synthesis", "skipped": False,
@@ -345,12 +337,5 @@ def synthesize_all(prome_db: str | Path, force: bool = False) -> dict:
 
 
 if __name__ == "__main__":
-    DB = Path(__file__).resolve().parent.parent / "data" / "prome.db"
-    envf = Path(__file__).resolve().parent.parent / ".env"
-    if envf.exists():
-        for line in envf.read_text().splitlines():
-            if "=" in line and not line.startswith("#"):
-                k, _, v = line.partition("=")
-                os.environ.setdefault(k.strip(), v.strip())
     force = "--force" in sys.argv
-    print(json.dumps(synthesize_all(DB, force=force), indent=2))
+    print(json.dumps(synthesize_all(force=force), indent=2))

@@ -2,28 +2,13 @@
 
 Your organisation memory that automates your work.
 
-ProMem is the cloud-deployable memory + project-tracking engine extracted from
-PMIS / ProMe — a focused FastAPI app over a single SQLite (Postgres in cloud),
-no embeddings, no vector store, no GPU. Reads productivity-tracker context,
-classifies it, links it to projects, and synthesizes per-project wikis.
+ProMem is a multi-user FastAPI app over Supabase Postgres, with Google
+OAuth via Supabase Auth. Reads your local productivity-tracker SQLite,
+classifies activities into Super-Contexts, links them to project
+deliverables, and synthesizes per-project wiki pages. No embeddings,
+no vector store, no GPU.
 
-## Quick start (Docker)
-
-```bash
-docker build -t promem:dev .
-docker run --rm -p 8888:8888 -v "$(pwd)/data:/data" promem:dev
-```
-
-Then open:
-- `http://localhost:8888/wiki` — per-project synthesized wikis
-- `http://localhost:8888/projects` — project tracker (Tree + Daily)
-- `http://localhost:8888/productivity` — 4 productivity widgets
-
-The container creates `data/prome.db` on first launch (idempotent migration).
-Tracker data is read from `${PROMEM_TRACKER_DB:-/data/tracker.db}` if present;
-ProMem still serves wiki + projects routes when no tracker file exists.
-
-## Local dev (Python directly)
+## Quick start (local dev)
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -31,23 +16,78 @@ pip install -r requirements.txt
 python3 -m uvicorn promem_app:app --port 8888 --reload
 ```
 
+Then open `http://localhost:8888/wiki` — you'll be redirected to
+`/login` for Google sign-in via Supabase.
+
+## Setup checklist (one-time)
+
+1. **Supabase project** — Dashboard → New project → Mumbai (or closest).
+2. **Schema** — paste `migrations/0002_postgres_init.sql` into Supabase
+   SQL Editor → Run. Confirms 10 tables under public schema.
+3. **Google OAuth** — enable Google provider in Supabase Auth, add the
+   Supabase callback URL (`https://<project>.supabase.co/auth/v1/callback`)
+   to Google Cloud OAuth client → Authorized redirect URIs.
+4. **Whitelist** — add `http://localhost:8888/login` (and your prod URL)
+   to Supabase Auth → URL Configuration → Redirect URLs.
+5. **`.env`** — copy these from Supabase Dashboard:
+   ```bash
+   PROMEM_DB_URL="postgresql://postgres:PASSWORD@db.PROJECT.supabase.co:5432/postgres"
+   SUPABASE_URL="https://PROJECT.supabase.co"
+   SUPABASE_ANON_KEY="eyJhbGciOi..."
+   SUPABASE_JWT_SECRET="your-jwt-secret"
+   OPENAI_API_KEY="sk-..."          # for classify/synthesize phases only
+   PROMEM_USER_ID="<your auth.users UUID>"  # for running the pipeline locally
+   PROMEM_TRACKER_DB="/Users/you/.productivity-tracker/tracker.db"
+   ```
+
+   Find `PROMEM_USER_ID` in Supabase → Authentication → Users → click
+   your user → "User UID".
+
+## Running the pipeline
+
+The nightly pipeline is local-first: it reads your local `tracker.db`
+and writes per-user data to Supabase Postgres.
+
+```bash
+python3 promem_orchestrator.py whoami        # confirm user resolution
+python3 promem_orchestrator.py check-key     # confirm env wiring
+python3 promem_orchestrator.py run           # full sync → classify → match → synth
+python3 promem_orchestrator.py status        # last_*_at timestamps
+```
+
+After a run, refresh `/wiki` in the browser — your SC cards fill in,
+deliverable wikis populate.
+
 ## Layout
 
 ```
-promem_app.py              FastAPI app (routes for /wiki, /projects, /productivity)
-promem_orchestrator.py     CLI driver for the nightly pipeline (sync → classify → match → synthesize)
-promem_pipeline/           Pipeline stages — each stage is a small stdlib module
+promem_app.py              FastAPI app + routes (/wiki, /projects, /productivity, /login, /auth/*)
+promem_orchestrator.py     CLI driver for the nightly pipeline
+promem_pipeline/
+  ├── sync.py              Stage 2: tracker.db → work_pages
+  ├── classify.py          Stage 3: LLM classifies into (sc_label, ctx_label)
+  ├── filter.py            Stage 3.5: archive non-keep SCs
+  ├── matcher.py           Stage 4: match work_pages to deliverables (5-layer scoring)
+  └── synthesis.py         Stage 5: LLM synthesizes per-SC and per-deliverable wiki prose
+db.py                      Postgres connection pool + user_id helper
+auth.py                    Supabase JWT verification (ES256 via JWKS, HS256 fallback)
 templates/                 Jinja2 templates (promem_*.html, all extend promem_base.html)
-migrations/                SQL migrations applied on first boot
+migrations/0002_*.sql      Postgres schema (multi-user with RLS)
 ```
 
 ## Environment variables
 
-| Var | Default | Purpose |
+| Var | Required for | Purpose |
 |---|---|---|
-| `PROMEM_DATA_DIR` | `./data` | Where `prome.db` (and `tracker.db` fallback) live |
-| `PROMEM_TRACKER_DB` | `${PROMEM_DATA_DIR}/tracker.db` | Read-only path to productivity-tracker SQLite |
-| `OPENAI_API_KEY` | unset | Required only for the nightly classify/synthesize phases |
+| `PROMEM_DB_URL` | app + pipeline | Supabase Postgres connection string |
+| `SUPABASE_URL` | app (auth) | Project URL — used for JWKS endpoint + login page |
+| `SUPABASE_ANON_KEY` | app (login page) | Public anon key, embedded in `/login` HTML |
+| `SUPABASE_JWT_SECRET` | app (HS256 only) | Legacy projects on HS256; ES256 uses JWKS automatically |
+| `PROMEM_USER_ID` | pipeline | UUID of the user whose data the pipeline writes |
+| `PROMEM_TRACKER_DB` | pipeline | Path to local productivity-tracker SQLite |
+| `PROMEM_DATA_DIR` | optional | Used as fallback for tracker.db lookup |
+| `OPENAI_API_KEY` | pipeline | gpt-4o-mini via httpx for classify + synthesize |
+| `PROMEM_SECURE_COOKIES` | optional | `true` in HTTPS production to enable Secure flag |
 
 ## License
 
