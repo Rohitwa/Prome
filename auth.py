@@ -18,6 +18,7 @@ from typing import Optional
 from urllib.parse import quote
 
 import jwt
+from jwt import PyJWKClient
 from fastapi import Cookie, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -35,6 +36,27 @@ def _jwt_secret() -> str:
             "Project Settings → API → JWT Settings → 'JWT Secret'."
         )
     return secret
+
+
+_jwks_client: Optional[PyJWKClient] = None
+
+
+def _get_jwks_client() -> PyJWKClient:
+    """Return a cached PyJWKClient pointed at this project's JWKS endpoint.
+    Used for ES256/RS256 — Supabase's modern asymmetric signing scheme."""
+    global _jwks_client
+    if _jwks_client is None:
+        supabase_url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+        if not supabase_url:
+            raise RuntimeError(
+                "SUPABASE_URL is not set. Required for verifying ES256/RS256 "
+                "JWTs against the project's JWKS endpoint."
+            )
+        _jwks_client = PyJWKClient(
+            f"{supabase_url}/auth/v1/.well-known/jwks.json",
+            cache_keys=True,
+        )
+    return _jwks_client
 
 
 _seeded_users: set[str] = set()
@@ -55,13 +77,32 @@ def _ensure_user_seeded(user_id: str) -> None:
 
 
 def _verify(token: str) -> str:
-    """Decode + validate a Supabase JWT, return user UUID (the `sub` claim)."""
-    payload = jwt.decode(
-        token,
-        _jwt_secret(),
-        algorithms=["HS256"],
-        audience="authenticated",
-    )
+    """Decode + validate a Supabase JWT, return user UUID (the `sub` claim).
+
+    Auto-detects the algorithm from the token header:
+      - ES256 / RS256: asymmetric — fetch public key from Supabase's JWKS
+        endpoint (modern projects, default since late 2025).
+      - HS256: symmetric — use SUPABASE_JWT_SECRET (legacy projects).
+    """
+    header = jwt.get_unverified_header(token)
+    alg = (header.get("alg") or "").upper()
+
+    if alg in ("ES256", "RS256"):
+        signing_key = _get_jwks_client().get_signing_key_from_jwt(token).key
+        payload = jwt.decode(
+            token, signing_key,
+            algorithms=[alg],
+            audience="authenticated",
+        )
+    elif alg == "HS256":
+        payload = jwt.decode(
+            token, _jwt_secret(),
+            algorithms=["HS256"],
+            audience="authenticated",
+        )
+    else:
+        raise jwt.InvalidAlgorithmError(f"Unsupported JWT algorithm: {alg!r}")
+
     user_id = payload.get("sub")
     if not user_id:
         raise jwt.InvalidTokenError("Token missing 'sub' claim")
