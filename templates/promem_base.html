@@ -1,5 +1,5 @@
 <!doctype html><html><head><meta charset="utf-8">
-<title>{% block title %}ProMe (simplified){% endblock %}</title>
+<title>{% block title %}ProMem{% endblock %}</title>
 <style>
 :root { --bg:#fff; --bg2:#f7f7f8; --bg3:#eef0f3; --fg:#111; --fg2:#3d3d3d; --fg3:#7a7a7a;
         --border:#e2e4e8; --blue:#2563eb; --green:#16a34a; --orange:#ea580c;
@@ -12,7 +12,17 @@ body { font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif; margin
 .topbar a { color:#93c5fd; text-decoration:none; }
 .topbar a.brand { color:#fff; font-weight:700; }
 .topbar a.active { color:#fff; }
-.topbar .right { margin-left:auto; opacity:.7; font-size:11px; font-family:ui-monospace,monospace; }
+.topbar .user-pill { margin-left:auto; display:flex; align-items:center; gap:10px;
+                     font-size:12px; color:#cbd5e1; }
+.topbar .user-pill img { width:24px; height:24px; border-radius:50%;
+                          background:#1e293b; }
+.topbar .user-pill .email { color:#cbd5e1; max-width:200px; overflow:hidden;
+                             text-overflow:ellipsis; white-space:nowrap; }
+.topbar .user-pill button { background:transparent; color:#93c5fd;
+                             border:1px solid rgba(255,255,255,0.18); border-radius:6px;
+                             padding:4px 10px; font-size:11px; cursor:pointer;
+                             font-family:inherit; }
+.topbar .user-pill button:hover { background:rgba(255,255,255,0.08); color:#fff; }
 .wrap { max-width:1080px; margin:0 auto; padding:24px; }
 .crumbs { font-size:12px; color:var(--fg3); margin-bottom:14px; }
 .crumbs a { color:var(--blue); text-decoration:none; }
@@ -30,15 +40,29 @@ h1 { font-size:26px; margin:0 0 6px; }
 {% block extra_css %}{% endblock %}
 </style></head><body>
 <div class="topbar">
-  <a class="brand" href="/wiki">memory</a>
+  <a class="brand" href="/wiki">ProMem</a>
   <a href="/wiki" {% if active=='wiki' %}class="active"{% endif %}>wiki</a>
   <a href="/projects" {% if active=='projects' %}class="active"{% endif %}>projects</a>
   <a href="/projects/new" {% if active=='new' %}class="active"{% endif %}>new project</a>
   <a href="/productivity" {% if active=='prod' %}class="active"{% endif %}>productivity</a>
-  <span class="right">ProMem</span>
+  {% if request.state.user %}
+  <div class="user-pill">
+    {% if request.state.user.avatar_url %}
+    <img src="{{ request.state.user.avatar_url }}" alt="" referrerpolicy="no-referrer">
+    {% endif %}
+    <span class="email" title="{{ request.state.user.email }}">{{ request.state.user.email }}</span>
+    <button onclick="promemLogout()">Logout</button>
+  </div>
+  {% endif %}
 </div>
 <div class="wrap">
 {% block content %}{% endblock %}
 </div>
+<script>
+async function promemLogout() {
+  try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) {}
+  window.location.href = '/login';
+}
+</script>
 {% block scripts %}{% endblock %}
 </body></html>

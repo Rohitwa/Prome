@@ -127,9 +127,10 @@ def auth_set_session(req: SessionIn) -> JSONResponse:
     """Validate the Supabase access token, mint an HttpOnly cookie.
     Called by the login page's JS after a successful Google OAuth round-trip."""
     try:
-        user_id = _verify_jwt(req.access_token)
+        payload = _verify_jwt(req.access_token)
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Invalid access token: {e}")
+    user_id = payload["sub"]
     response = JSONResponse({"ok": True, "user_id": user_id})
     response.set_cookie(
         key="promem_session",

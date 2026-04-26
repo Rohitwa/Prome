@@ -76,8 +76,10 @@ def _ensure_user_seeded(user_id: str) -> None:
         pass
 
 
-def _verify(token: str) -> str:
-    """Decode + validate a Supabase JWT, return user UUID (the `sub` claim).
+def _verify(token: str) -> dict:
+    """Decode + validate a Supabase JWT, return the full payload dict
+    (caller usually uses ['sub'] for user_id; HTML routes also surface
+    ['email'] and ['user_metadata']['avatar_url'] in the topbar).
 
     Auto-detects the algorithm from the token header:
       - ES256 / RS256: asymmetric — fetch public key from Supabase's JWKS
@@ -103,10 +105,9 @@ def _verify(token: str) -> str:
     else:
         raise jwt.InvalidAlgorithmError(f"Unsupported JWT algorithm: {alg!r}")
 
-    user_id = payload.get("sub")
-    if not user_id:
+    if not payload.get("sub"):
         raise jwt.InvalidTokenError("Token missing 'sub' claim")
-    return user_id
+    return payload
 
 
 def _fail(request: Request, msg: str) -> None:
@@ -128,13 +129,26 @@ def get_current_user(
 ) -> str:
     """FastAPI dependency: verify JWT, return user_id (UUID as string).
     Browsers without auth get redirected to /login?next=<original-url>;
-    API clients get 401."""
+    API clients get 401.
+
+    Side effect: stashes a small user dict (id, email, avatar_url, name)
+    on request.state.user so the topbar template can render the user
+    pill without every route having to thread it explicitly.
+    """
     token = creds.credentials if creds is not None else promem_session
     if not token:
         _fail(request, "Not authenticated — provide Authorization: Bearer or promem_session cookie")
     try:
-        user_id = _verify(token)
+        payload = _verify(token)
     except jwt.PyJWTError as e:
         _fail(request, f"Invalid token: {e}")
+    user_id = payload["sub"]
+    meta = payload.get("user_metadata") or {}
+    request.state.user = {
+        "id": user_id,
+        "email": payload.get("email") or "",
+        "name": meta.get("full_name") or meta.get("name") or "",
+        "avatar_url": meta.get("avatar_url") or "",
+    }
     _ensure_user_seeded(user_id)
     return user_id
