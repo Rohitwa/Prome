@@ -13,6 +13,19 @@ data/*.db
 data/*.db-*
 .session.json
 
+# ProMem agent runtime artifacts (Phase 4b)
+data/agent.log*
+data/agent_state.json
+data/.pending_update.json
+data/.last_update_check
+data/staged/
+
+# Release pipeline outputs
+dist/
+installer/agent.zip
+installer/promem_setup_*.exe
+promem_agent/INSTALLED_VERSION
+
 .DS_Store
 .idea/
 .vscode/

@@ -1,0 +1,7 @@
+# ProMem agent (Phase 4b) — runs locally on user's Windows machine.
+# Kept separate from server-side requirements.txt so the Fly.io deploy
+# image stays slim and the agent install doesn't pull in fastapi/uvicorn.
+
+httpx>=0.25
+pyjwt[crypto]>=2.8
+keyring>=24.0
