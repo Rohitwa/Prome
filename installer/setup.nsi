@@ -34,7 +34,7 @@ RequestExecutionLevel user      ; per-user - never prompt for admin
 !define MUI_UNICON "${NSISDIR}\Contrib\Graphics\Icons\modern-uninstall.ico"
 
 !insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_LICENSE   "..\LICENSE"
+!insertmacro MUI_PAGE_LICENSE   "../LICENSE"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_TEXT "ProMem Agent ${AGENT_VERSION} installed.$\r$\n$\r$\nThe agent runs every 5 minutes via Task Scheduler.$\r$\n$\r$\nCheck status at any time:$\r$\n  $INSTDIR\.venv\Scripts\python.exe -m promem_agent status$\r$\n$\r$\nIf the browser login did not complete during install, re-run:$\r$\n  $INSTDIR\.venv\Scripts\python.exe -m promem_agent init"

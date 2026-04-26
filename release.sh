@@ -124,6 +124,13 @@ sed 's/^/    /' "$MANIFEST_PATH"
 # ── 5. Upload to Fly /data via sftp ───────────────────────────────────────
 echo
 echo "→ Uploading to Fly /data via flyctl ssh sftp ..."
+# flyctl sftp `put` doesn't overwrite — rm first so re-runs of the same
+# version replace cleanly. The `|| true` lets first-time uploads pass
+# (rm of a missing file errors).
+flyctl ssh sftp shell --app promem <<SFTP || true
+rm /data/promem_agent-${VERSION}.zip
+rm /data/agent_manifest.json
+SFTP
 flyctl ssh sftp shell --app promem <<SFTP
 put $DIST_ZIP /data/promem_agent-${VERSION}.zip
 put $MANIFEST_PATH /data/agent_manifest.json
