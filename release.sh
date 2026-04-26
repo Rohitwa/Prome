@@ -80,21 +80,33 @@ if [ "$ACTUAL" != "$VERSION" ]; then
   exit 1
 fi
 
-# ── 2. Stage agent.zip with INSTALLED_VERSION baked in ────────────────────
+# ── 2. Stage agent.zip via clean temp dir ─────────────────────────────────
+# We assemble all release files in a tempdir, then zip the whole thing.
+# This keeps the source repo untouched (no INSTALLED_VERSION pollution)
+# and produces a flat zip layout with setup.bat at the root.
 echo "→ Staging agent zip ..."
 mkdir -p dist
 DIST_ZIP="dist/promem_agent-${VERSION}.zip"
 rm -f "$DIST_ZIP"
 
-# trap also covers errors mid-script — keeps the source repo clean.
-trap 'rm -f promem_agent/INSTALLED_VERSION' EXIT
-echo "$VERSION" > promem_agent/INSTALLED_VERSION
+STAGE_DIR=$(mktemp -d)
+trap 'rm -rf "$STAGE_DIR"' EXIT
 
-find promem_agent -name '__pycache__' -type d -prune -exec rm -rf {} +
-find promem_agent -name '*.pyc' -delete
+cp -r promem_agent          "$STAGE_DIR/"
+cp     requirements-agent.txt "$STAGE_DIR/"
+cp     installer/setup.bat   "$STAGE_DIR/"
+cp     installer/uninstall.bat "$STAGE_DIR/"
+cp     installer/README.txt  "$STAGE_DIR/"
 
-zip -qr "$DIST_ZIP" promem_agent requirements-agent.txt \
-    -x '*__pycache__*' -x '*.pyc'
+# Bake INSTALLED_VERSION into the staged copy (so updater.is_dev_install()
+# returns False on installed machines). Source repo stays untouched.
+echo "$VERSION" > "$STAGE_DIR/promem_agent/INSTALLED_VERSION"
+
+find "$STAGE_DIR" -name '__pycache__' -type d -prune -exec rm -rf {} +
+find "$STAGE_DIR" -name '*.pyc' -delete
+
+# Zip from inside the stage dir for flat paths (no leading temp/ prefix).
+( cd "$STAGE_DIR" && zip -qr "$OLDPWD/$DIST_ZIP" . )
 
 ZIP_BYTES=$(wc -c < "$DIST_ZIP" | tr -d ' ')
 echo "  $DIST_ZIP (${ZIP_BYTES} bytes)"
@@ -124,13 +136,11 @@ sed 's/^/    /' "$MANIFEST_PATH"
 # ── 5. Upload to Fly /data via sftp ───────────────────────────────────────
 echo
 echo "→ Uploading to Fly /data via flyctl ssh sftp ..."
-# flyctl sftp `put` doesn't overwrite — rm first so re-runs of the same
-# version replace cleanly. The `|| true` lets first-time uploads pass
-# (rm of a missing file errors).
-flyctl ssh sftp shell --app promem <<SFTP || true
-rm /data/promem_agent-${VERSION}.zip
-rm /data/agent_manifest.json
-SFTP
+# flyctl sftp `put` won't overwrite (and sftp shell has no `rm`). Use
+# `ssh console -C` to delete via the remote shell first. Failures are
+# fine (file may not exist on first-time upload).
+flyctl ssh console --app promem -C "rm -f /data/promem_agent-${VERSION}.zip /data/agent_manifest.json" >/dev/null 2>&1 || true
+
 flyctl ssh sftp shell --app promem <<SFTP
 put $DIST_ZIP /data/promem_agent-${VERSION}.zip
 put $MANIFEST_PATH /data/agent_manifest.json
@@ -138,31 +148,21 @@ SFTP
 
 echo "  uploaded."
 
-# ── 6. Build Windows installer ────────────────────────────────────────────
-echo
-echo "→ Building setup.exe via installer/build.sh ..."
-./installer/build.sh
-INSTALLER_EXE="installer/promem_setup_${VERSION}.exe"
-if [ ! -f "$INSTALLER_EXE" ]; then
-  echo "error: $INSTALLER_EXE was not produced." >&2
-  exit 1
-fi
-
-# ── 7. Final instructions ─────────────────────────────────────────────────
+# ── 6. Final instructions ─────────────────────────────────────────────────
 echo
 echo "==================================================================="
-echo "✓ Release v${VERSION} built and uploaded."
+echo "Release v${VERSION} built and uploaded."
 echo "==================================================================="
 echo
-echo "Existing installed agents will pick up v${VERSION} within ~1 hour"
+echo "Existing installed agents pick up v${VERSION} within ~1 hour"
 echo "(auto-update throttle). Verify the live manifest with:"
 echo
 echo "  curl https://promem.fly.dev/agent/manifest"
 echo
-echo "To publish the .exe for new first-time installs:"
+echo "For new first-time installs, publish the agent zip on GitHub:"
 echo
 echo "  gh release create v${VERSION} \\"
-echo "    \"$INSTALLER_EXE\" \\"
+echo "    \"$DIST_ZIP\" \\"
 echo "    --title \"v${VERSION}\" \\"
-echo "    --notes \"Auto-update users will pick up this release within 1 hour.\""
+echo "    --notes \"Download promem_agent-${VERSION}.zip, extract, double-click setup.bat. Auto-update users will pick up this release within 1 hour.\""
 echo
