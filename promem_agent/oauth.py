@@ -44,6 +44,18 @@ LOCAL_PORT      = 53682
 LOCAL_REDIRECT  = f"http://127.0.0.1:{LOCAL_PORT}/callback"
 BROWSER_TIMEOUT = 120  # seconds to wait for user to complete browser auth
 
+# Public values — same as those embedded in any Supabase frontend bundle
+# (the anon key is designed for client-side use; RLS enforces data isolation
+# regardless of who has the anon key). Baked in so the agent works on a fresh
+# Windows install with no .env file shipped. Env vars still take precedence
+# for dev / staging / testing against alt projects.
+DEFAULT_SUPABASE_URL      = "https://oiuaahyuvbdxhobjpyuy.supabase.co"
+DEFAULT_SUPABASE_ANON_KEY = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdWFhaHl1dmJkeGhvYmpweXV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcxMzI3MTgsImV4cCI6MjA5MjcwODcxOH0."
+    "vyQVbBgWwivQXXv0e1c5QqGzSZwSG-dhExZXRhP5P20"
+)
+
 
 class AuthError(Exception):
     """Auth flow failed (user closed browser, refresh token revoked, etc.)."""
@@ -75,23 +87,15 @@ _load_dotenv()
 
 
 def _supabase_url() -> str:
+    """Env var SUPABASE_URL overrides; otherwise fall back to baked default."""
     url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
-    if not url:
-        raise AuthError(
-            "SUPABASE_URL is not set. Add it to Prome/.env or your shell env."
-        )
-    return url
+    return url if url else DEFAULT_SUPABASE_URL
 
 
 def _supabase_anon_key() -> str:
     """Public anon key required as `apikey` header on /auth/v1/* requests."""
     key = os.environ.get("SUPABASE_ANON_KEY", "").strip()
-    if not key:
-        raise AuthError(
-            "SUPABASE_ANON_KEY is not set. Get from Supabase Dashboard → "
-            "Project Settings → API → 'anon public' key."
-        )
-    return key
+    return key if key else DEFAULT_SUPABASE_ANON_KEY
 
 
 # ── PKCE helpers ─────────────────────────────────────────────────────────
