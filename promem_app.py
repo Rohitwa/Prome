@@ -22,6 +22,8 @@ APIs (JSON):
   POST /api/orchestrator/run                        — disabled in cloud (Phase 4+)
   GET  /api/orchestrator/status                     — disabled in cloud (Phase 4+)
   POST /api/upload-segments                         {segments: [...]} (Phase 4a)
+  GET  /agent/manifest                              auto-update manifest (Phase 4b.7, public)
+  GET  /agent/dist/{filename}                       agent zip download (Phase 4b.7, public)
 
 Run:
   PROMEM_DB_URL="postgresql://..."  \
@@ -43,7 +45,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
@@ -699,6 +701,49 @@ def api_upload_segments(
         )
         n_inserted = cur.rowcount
     return {"ok": True, "n_received": n_received, "n_inserted": n_inserted}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Agent auto-update endpoints (Phase 4b.7) — public, no auth.
+# Manifest is read by every agent ~once per hour; zips are downloaded once per
+# release. Both live on the Fly persistent volume at /data, populated by the
+# Mac-side release.sh via `flyctl ssh sftp`.
+# ──────────────────────────────────────────────────────────────────────────────
+_AGENT_DATA_DIR = Path("/data")
+_AGENT_MANIFEST = _AGENT_DATA_DIR / "agent_manifest.json"
+_AGENT_ZIP_RE = re.compile(r"^promem_agent-[0-9.]+\.zip$")
+
+
+@app.get("/agent/manifest")
+def get_agent_manifest() -> dict:
+    """Return the latest agent release manifest. Returns a placeholder shape
+    if no release has been published yet (auto-updater treats this as 'no
+    update needed' since the placeholder version is 0.0.0)."""
+    if not _AGENT_MANIFEST.exists():
+        return {
+            "latest": "0.0.0",
+            "url": "",
+            "sha256": "",
+            "min_compat_version": "0.0.0",
+            "released_at": "",
+            "note": "no release published yet",
+        }
+    try:
+        return json.loads(_AGENT_MANIFEST.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        raise HTTPException(500, f"manifest unreadable: {e}")
+
+
+@app.get("/agent/dist/{filename}")
+def get_agent_dist(filename: str) -> FileResponse:
+    """Serve a released agent zip from /data. Filename whitelisted against
+    a strict pattern to prevent path traversal."""
+    if not _AGENT_ZIP_RE.match(filename):
+        raise HTTPException(404, f"not found: {filename}")
+    p = _AGENT_DATA_DIR / filename
+    if not p.exists() or not p.is_file():
+        raise HTTPException(404, f"not found: {filename}")
+    return FileResponse(str(p), media_type="application/zip", filename=filename)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
