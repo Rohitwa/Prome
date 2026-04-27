@@ -98,12 +98,16 @@ def _slow_loop_job() -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    from datetime import timezone as _tz
     _scheduler.add_job(
         _fast_loop_job,
         IntervalTrigger(minutes=30),
         id="fast_loop",
-        max_instances=1,            # don't overlap with previous run
-        coalesce=True,              # collapse missed ticks
+        # Fire once immediately on startup so fresh deploys sync new data
+        # right away (without waiting up to 30min for the first interval tick).
+        next_run_time=datetime.now(_tz.utc),
+        max_instances=1,
+        coalesce=True,
         misfire_grace_time=300,
     )
     _scheduler.add_job(
@@ -115,12 +119,13 @@ async def _lifespan(app: FastAPI):
         misfire_grace_time=600,
     )
     _scheduler.start()
-    print("scheduler: started — fast every 30min, slow at 14:00+18:00 UTC")
+    print("scheduler: started — fast every 30min (first fire: now), "
+          "slow at 14:00+18:00 UTC", flush=True)
     try:
         yield
     finally:
         _scheduler.shutdown(wait=False)
-        print("scheduler: shutdown")
+        print("scheduler: shutdown", flush=True)
 
 
 app = FastAPI(title="ProMem", lifespan=_lifespan)

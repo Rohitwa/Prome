@@ -11,6 +11,7 @@ primary_region = 'bom'
 [env]
   PROMEM_DATA_DIR = '/data'
   PROMEM_SECURE_COOKIES = 'true'
+  PYTHONUNBUFFERED = '1'
 
 [[mounts]]
   source = 'data'
