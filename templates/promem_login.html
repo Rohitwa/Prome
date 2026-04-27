@@ -75,6 +75,7 @@
   const statusEl = document.getElementById('status')
   const btn = document.getElementById('signin')
   const RELAY_PREFIX = 'http://127.0.0.1:53682/callback'
+  const RELAY_STORAGE_KEY = 'promem_agent_callback'
 
   function setStatus(msg, isError) {
     statusEl.textContent = msg || ''
@@ -83,6 +84,34 @@
 
   function isLocalRelayTarget(nextUrl) {
     return (nextUrl || '').startsWith(RELAY_PREFIX)
+  }
+
+  function _readAgentCallbackFromHash() {
+    const p = new URLSearchParams(window.location.hash.slice(1))
+    return p.get('agent_callback')
+  }
+
+  function _persistRelayTargetFromHash() {
+    const cb = _readAgentCallbackFromHash()
+    if (isLocalRelayTarget(cb)) {
+      sessionStorage.setItem(RELAY_STORAGE_KEY, cb)
+      return cb
+    }
+    return null
+  }
+
+  function getRelayTarget() {
+    const fromHash = _persistRelayTargetFromHash()
+    if (fromHash) return fromHash
+    const stored = sessionStorage.getItem(RELAY_STORAGE_KEY)
+    if (isLocalRelayTarget(stored)) return stored
+    // Backward compatibility for older agent builds that used ?next=http://127...
+    if (isLocalRelayTarget(NEXT)) return NEXT
+    return null
+  }
+
+  function clearRelayTarget() {
+    sessionStorage.removeItem(RELAY_STORAGE_KEY)
   }
 
   function relayTokensToLocal(nextUrl, accessToken, refreshToken) {
@@ -94,13 +123,14 @@
   }
 
   async function settleSession() {
+    _persistRelayTargetFromHash()
     // Pull the access token straight from the URL — works regardless of
     // whether the Supabase client picked it up. Handles both implicit
     // (#access_token=...) and PKCE (?code=...) redirect shapes.
     const hashParams = new URLSearchParams(window.location.hash.slice(1))
     let token = hashParams.get('access_token')
     let refreshToken = hashParams.get('refresh_token')
-    const relayMode = isLocalRelayTarget(NEXT)
+    const relayTarget = getRelayTarget()
 
     if (!token) {
       const code = new URLSearchParams(window.location.search).get('code')
@@ -121,7 +151,7 @@
       } catch (_) {}
     }
 
-    if (relayMode) {
+    if (relayTarget) {
       if (!token || !refreshToken) {
         return false
       }
@@ -133,7 +163,8 @@
           body: JSON.stringify({ access_token: token }),
         })
       } catch (_) {}
-      relayTokensToLocal(NEXT, token, refreshToken)
+      clearRelayTarget()
+      relayTokensToLocal(relayTarget, token, refreshToken)
       return true
     }
 
@@ -164,10 +195,14 @@
   btn.addEventListener('click', async () => {
     btn.disabled = true
     setStatus('Redirecting to Google…')
+    const relayTarget = getRelayTarget()
+    const redirectTo = relayTarget
+      ? (window.location.origin + '/login')
+      : (window.location.origin + '/login?next=' + encodeURIComponent(NEXT))
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: window.location.origin + '/login?next=' + encodeURIComponent(NEXT),
+        redirectTo,
       },
     })
     if (error) {

@@ -132,6 +132,13 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/agent-relay-info":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"callback": LOCAL_REDIRECT}).encode())
+            return
         if parsed.path != "/callback":
             self.send_response(404)
             self.end_headers()
@@ -199,11 +206,14 @@ def _exchange_refresh(refresh_token: str) -> dict:
 def first_run_login() -> str:
     """Run OAuth through hosted ProMem login, then relay tokens locally.
 
-    Browser opens https://promem.fly.dev/login?next=<LOCAL_REDIRECT>.
+    Browser opens https://promem.fly.dev/login.
     The hosted login page should exchange auth code for session tokens and
-    redirect LOCAL_REDIRECT with access_token + refresh_token query params.
+    relay to LOCAL_REDIRECT with access_token + refresh_token query params.
     """
-    login_url = f"{_promem_login_url()}?" + urllib.parse.urlencode({"next": LOCAL_REDIRECT})
+    login_url = (
+        f"{_promem_login_url()}#agent_callback="
+        f"{urllib.parse.quote(LOCAL_REDIRECT, safe='')}"
+    )
 
     server = _CallbackServer(("127.0.0.1", LOCAL_PORT), _CallbackHandler)
     server.timeout = 0.5
