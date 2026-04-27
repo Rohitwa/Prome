@@ -2,10 +2,8 @@
 setlocal EnableExtensions
 
 REM ======================================================================
-REM  ProMem Agent uninstaller.
-REM  Removes the scheduled task and (optionally) install dir + venv.
-REM  Refresh token in Windows Credential Manager must be removed manually
-REM  via Control Panel -> Credential Manager -> 'ProMem'.
+REM  ProMem uninstaller helper.
+REM  Primary uninstall path is %LOCALAPPDATA%\ProMem\uninstall.exe
 REM ======================================================================
 
 set "TASK_AGENT=ProMem Agent"
@@ -17,15 +15,20 @@ echo Uninstalling ProMem...
 echo.
 
 REM --- Step 1: Remove scheduled tasks ------------------------------------
-echo [1/2] Removing scheduled tasks (agent + tracker)...
+echo [1/3] Removing scheduled tasks...
 schtasks /Delete /TN "%TASK_AGENT%" /F >nul 2>&1
 schtasks /Delete /TN "%TASK_TRACKER%" /F >nul 2>&1
-REM Best-effort: kill any running tracker process so the install dir can be removed.
+
+REM --- Step 2: Stop running processes (best effort) ----------------------
+echo [2/3] Stopping running processes...
+taskkill /F /IM promem_tracker.exe >nul 2>&1
+taskkill /F /IM promem_agent.exe >nul 2>&1
+REM legacy fallback cleanup (older Python-based installs)
 taskkill /F /IM python.exe /FI "WINDOWTITLE eq ProMem Tracker*" >nul 2>&1
 
-REM --- Step 2: Remove install dir ----------------------------------------
-echo [2/2] Removing install dir at %INSTALL_DIR% ...
-echo       (state files, logs, refresh_token in Credential Manager NOT removed)
+REM --- Step 3: Remove install dir ----------------------------------------
+echo [3/3] Removing install dir at %INSTALL_DIR% ...
+echo       (Credential Manager token is NOT removed automatically)
 echo.
 choice /M "Delete %INSTALL_DIR% and all its contents?"
 if errorlevel 2 (
@@ -34,11 +37,9 @@ if errorlevel 2 (
     exit /b 0
 )
 
-REM Self-delete trick: spawn a detached cmd to rmdir after this script exits.
-REM (rmdir can't delete the directory containing the running .bat file.)
 start "" /b cmd /c "timeout /t 1 /nobreak >nul && rmdir /s /q ""%INSTALL_DIR%"" && exit"
 echo.
 echo Uninstall scheduled. Files will be removed momentarily.
-echo Refresh token: Control Panel -> Credential Manager -> Windows Credentials -> 'ProMem' -> Remove.
+echo Remove token manually: Control Panel ^> Credential Manager ^> Windows Credentials ^> 'ProMem'.
 echo.
 exit /b 0

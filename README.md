@@ -19,6 +19,23 @@ python3 -m uvicorn promem_app:app --port 8888 --reload
 Then open `http://localhost:8888/wiki` — you'll be redirected to
 `/login` for Google sign-in via Supabase.
 
+## Windows end-user install (no Python required)
+
+Installers are per-user (`%LOCALAPPDATA%\ProMem`) and do not require admin rights.
+
+1. Run `promem_setup_<version>_x64.exe`.
+2. Installer configures:
+   - `ProMem Tracker` scheduled task (`ONLOGON`, hidden background run)
+   - `ProMem Agent` scheduled task (every 5 minutes, hidden background run)
+3. Complete one-time browser login when prompted.
+
+Check runtime health:
+
+```bat
+cd /d "%LOCALAPPDATA%\ProMem"
+bin\promem_agent\promem_agent.exe status
+```
+
 ## Setup checklist (one-time)
 
 1. **Supabase project** — Dashboard → New project → Mumbai (or closest).

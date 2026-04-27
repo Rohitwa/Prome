@@ -24,7 +24,9 @@ data/staged/
 dist/
 installer/agent.zip
 installer/promem_setup_*.exe
+installer/payload/
 promem_agent/INSTALLED_VERSION
+build/pyinstaller_windows/
 
 .DS_Store
 .idea/

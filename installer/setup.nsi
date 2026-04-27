@@ -1,25 +1,26 @@
-; ProMem agent installer (NSIS).
+; ProMem Windows installer (NSIS).
 ;
-; Build on Mac:  brew install makensis  ;  ../installer/build.sh
-; Or directly:   makensis -DAGENT_VERSION=0.1.0 setup.nsi
+; Builds a per-user installer that ships prebuilt binaries:
+;   - bin\promem_agent\promem_agent.exe
+;   - bin\promem_tracker\promem_tracker.exe
 ;
-; Per-user install: lives in %LOCALAPPDATA%\ProMem, no admin rights, no UAC.
-; Detects Python 3.10+ (prompts user to install manually if missing - clearer
-; than silently auto-installing). Creates a per-install venv, pip-installs
-; agent deps, writes runner.bat, registers Task Scheduler entry running every
-; 5 minutes, then triggers OAuth login (browser opens once).
+; No system Python required on end-user machines.
+;
+; Build:
+;   makensis -DAGENT_VERSION=0.1.0 setup.nsi
 
 !ifndef AGENT_VERSION
   !define AGENT_VERSION "0.0.0-dev"
 !endif
 
-!define APPNAME       "ProMem Agent"
+!define APPNAME       "ProMem"
 !define APPNAME_SHORT "ProMem"
-!define TASK_NAME     "ProMem Agent"
+!define TASK_AGENT    "ProMem Agent"
+!define TASK_TRACKER  "ProMem Tracker"
 !define COMPANY       "Rohit Singh"
 
 Name        "${APPNAME} ${AGENT_VERSION}"
-OutFile     "promem_setup_${AGENT_VERSION}.exe"
+OutFile     "promem_setup_${AGENT_VERSION}_x64.exe"
 InstallDir  "$LOCALAPPDATA\${APPNAME_SHORT}"
 ShowInstDetails   show
 ShowUninstDetails show
@@ -37,7 +38,7 @@ RequestExecutionLevel user      ; per-user - never prompt for admin
 !insertmacro MUI_PAGE_LICENSE   "../LICENSE"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_FINISHPAGE_TEXT "ProMem Agent ${AGENT_VERSION} installed.$\r$\n$\r$\nThe agent runs every 5 minutes via Task Scheduler.$\r$\n$\r$\nCheck status at any time:$\r$\n  $INSTDIR\.venv\Scripts\python.exe -m promem_agent status$\r$\n$\r$\nIf the browser login did not complete during install, re-run:$\r$\n  $INSTDIR\.venv\Scripts\python.exe -m promem_agent init"
+!define MUI_FINISHPAGE_TEXT "ProMem ${AGENT_VERSION} installed.$\r$\n$\r$\nTracker runs in the background at logon.$\r$\nAgent runs every 5 minutes via Task Scheduler.$\r$\n$\r$\nCheck status at any time:$\r$\n  $INSTDIR\bin\promem_agent\promem_agent.exe status$\r$\n$\r$\nIf browser login did not complete during install, re-run:$\r$\n  $INSTDIR\bin\promem_agent\promem_agent.exe init"
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -49,83 +50,71 @@ RequestExecutionLevel user      ; per-user - never prompt for admin
 Section "Install" SecInstall
   SetOutPath "$INSTDIR"
 
-  ; --- Step 1: Detect Python ---------------------------------------------
-  DetailPrint "Checking for Python on PATH..."
-  nsExec::ExecToStack 'cmd /c python --version 2>&1'
-  Pop $0  ; exit code
-  Pop $1  ; output
-  ${If} $0 != 0
-    MessageBox MB_ICONSTOP|MB_OK "Python is not installed or not on PATH.$\r$\n$\r$\nPlease install Python 3.10 or newer from:$\r$\n  https://www.python.org/downloads/$\r$\n$\r$\nIMPORTANT: Check 'Add Python to PATH' on the first install screen.$\r$\n$\r$\nThen re-run this installer."
-    ExecShell "open" "https://www.python.org/downloads/"
-    Abort
-  ${EndIf}
-  DetailPrint "Found: $1"
+  ; --- Step 1: Extract bundled binaries ----------------------------------
+  DetailPrint "Extracting bundled runtime files..."
+  File /r "payload\*"
 
-  ; --- Step 2: Verify Python >= 3.10 -------------------------------------
-  DetailPrint "Checking Python version is 3.10 or newer..."
-  nsExec::ExecToStack 'cmd /c python -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)"'
-  Pop $0
-  ${If} $0 != 0
-    MessageBox MB_ICONSTOP|MB_OK "Python 3.10 or newer is required (you have: $1).$\r$\n$\r$\nUpgrade from:$\r$\n  https://www.python.org/downloads/"
-    ExecShell "open" "https://www.python.org/downloads/"
-    Abort
-  ${EndIf}
+  IfFileExists "$INSTDIR\bin\promem_agent\promem_agent.exe" +2 0
+    Goto missing_payload
+  IfFileExists "$INSTDIR\bin\promem_tracker\promem_tracker.exe" +2 0
+    Goto missing_payload
+  Goto payload_ok
 
-  ; --- Step 3: Extract baked agent.zip ----------------------------------
-  DetailPrint "Extracting agent files..."
-  File "agent.zip"
-  ; tar.exe ships with Windows 10 1803+; extracts to $INSTDIR.
-  nsExec::ExecToStack 'cmd /c tar -xf "$INSTDIR\agent.zip" -C "$INSTDIR"'
-  Pop $0
-  ${If} $0 != 0
-    MessageBox MB_ICONSTOP|MB_OK "Failed to extract agent.zip.$\r$\n$\r$\ntar.exe is required (built into Windows 10 1803+). If you are on an older Windows, please update."
+  missing_payload:
+    MessageBox MB_ICONSTOP|MB_OK "Installer payload is incomplete.$\r$\n$\r$\nMissing binary under:$\r$\n  $INSTDIR\bin$\r$\n$\r$\nRebuild payload with installer/build_pyinstaller_windows.ps1 and recompile setup.nsi."
     Abort
-  ${EndIf}
-  Delete "$INSTDIR\agent.zip"
 
-  ; --- Step 4: Create per-install venv ----------------------------------
-  DetailPrint "Creating virtual environment at $INSTDIR\.venv ..."
-  nsExec::ExecToStack 'cmd /c python -m venv "$INSTDIR\.venv"'
-  Pop $0
-  ${If} $0 != 0
-    MessageBox MB_ICONSTOP|MB_OK "Failed to create Python venv.$\r$\n$\r$\nThe Python venv module may be missing. Try installing Python from python.org (the official installer includes it)."
-    Abort
-  ${EndIf}
+  payload_ok:
 
-  ; --- Step 5: Install agent dependencies into venv ---------------------
-  DetailPrint "Installing Python dependencies (keyring, httpx, pyjwt)..."
-  nsExec::ExecToStack 'cmd /c "$INSTDIR\.venv\Scripts\pip.exe" install --quiet --disable-pip-version-check -r "$INSTDIR\requirements-agent.txt"'
-  Pop $0
-  ${If} $0 != 0
-    MessageBox MB_ICONSTOP|MB_OK "Failed to install Python dependencies. Check your internet connection and re-run the installer.$\r$\n$\r$\nIf the problem persists, install manually:$\r$\n  $INSTDIR\.venv\Scripts\pip install -r $INSTDIR\requirements-agent.txt"
-    Abort
-  ${EndIf}
+  ; --- Step 2: Write hidden launchers (no cmd popups) --------------------
+  DetailPrint "Writing hidden task launchers..."
 
-  ; --- Step 6: Write runner.bat -----------------------------------------
-  DetailPrint "Writing runner.bat..."
-  FileOpen $0 "$INSTDIR\runner.bat" w
-  FileWrite $0 "@echo off$\r$\n"
-  FileWrite $0 'REM ProMem runner - invoked by Task Scheduler every 5 min.$\r$\n'
-  FileWrite $0 '"$INSTDIR\.venv\Scripts\python.exe" -m promem_agent run$\r$\n'
-  FileWrite $0 "exit /b %errorlevel%$\r$\n"
+  ; Agent task launcher (every 5 min, waits for completion).
+  FileOpen $0 "$INSTDIR\run_agent_hidden.vbs" w
+  FileWrite $0 "Set shell = CreateObject($\"WScript.Shell$\")$\r$\n"
+  FileWrite $0 "shell.CurrentDirectory = $\"$INSTDIR$\"$\r$\n"
+  FileWrite $0 "shell.Environment($\"PROCESS$\")($\"PROMEM_TRACKER_DB$\") = $\"$INSTDIR\tracker.db$\"$\r$\n"
+  FileWrite $0 "shell.Environment($\"PROCESS$\")($\"PROMEM_AGENT_DISABLE_AUTO_UPDATE$\") = $\"true$\"$\r$\n"
+  FileWrite $0 "shell.Run Chr(34) & $\"$INSTDIR\bin\promem_agent\promem_agent.exe$\" & Chr(34) & $\" run$\", 0, True$\r$\n"
   FileClose $0
 
-  ; --- Step 7: Register Task Scheduler entry ----------------------------
-  DetailPrint "Registering '${TASK_NAME}' scheduled task (every 5 min)..."
-  nsExec::ExecToStack 'cmd /c schtasks /Create /TN "${TASK_NAME}" /TR "\"$INSTDIR\runner.bat\"" /SC MINUTE /MO 5 /F /RL LIMITED'
+  ; Tracker launcher (at logon, long-lived background process).
+  FileOpen $0 "$INSTDIR\run_tracker_hidden.vbs" w
+  FileWrite $0 "Set shell = CreateObject($\"WScript.Shell$\")$\r$\n"
+  FileWrite $0 "shell.CurrentDirectory = $\"$INSTDIR$\"$\r$\n"
+  FileWrite $0 "shell.Environment($\"PROCESS$\")($\"OPENAI_USE_PROXY$\") = $\"true$\"$\r$\n"
+  FileWrite $0 "shell.Environment($\"PROCESS$\")($\"PROMEM_TRACKER_DB$\") = $\"$INSTDIR\tracker.db$\"$\r$\n"
+  FileWrite $0 "shell.Run Chr(34) & $\"$INSTDIR\bin\promem_tracker\promem_tracker.exe$\" & Chr(34), 0, False$\r$\n"
+  FileClose $0
+
+  ; --- Step 3: Register scheduled tasks ----------------------------------
+  DetailPrint "Registering '${TASK_AGENT}' scheduled task (every 5 min)..."
+  nsExec::ExecToStack 'cmd /c schtasks /Create /TN "${TASK_AGENT}" /TR "\"$WINDIR\System32\wscript.exe\" //B \"$INSTDIR\run_agent_hidden.vbs\"" /SC MINUTE /MO 5 /F /RL LIMITED'
   Pop $0
   ${If} $0 != 0
-    MessageBox MB_ICONEXCLAMATION|MB_OK "Failed to register the scheduled task.$\r$\n$\r$\nYou can register it manually:$\r$\n  schtasks /Create /TN ${TASK_NAME} /TR $\"$INSTDIR\runner.bat$\" /SC MINUTE /MO 5 /F"
+    MessageBox MB_ICONEXCLAMATION|MB_OK "Failed to register ${TASK_AGENT}.$\r$\n$\r$\nYou can register it manually from Command Prompt."
   ${EndIf}
 
-  ; --- Step 8: Trigger one-time OAuth login (opens browser) -------------
-  DetailPrint "Opening browser for one-time login (Google / Supabase)..."
-  ExecWait '"$INSTDIR\.venv\Scripts\python.exe" -m promem_agent init' $0
+  DetailPrint "Registering '${TASK_TRACKER}' scheduled task (at logon)..."
+  nsExec::ExecToStack 'cmd /c schtasks /Create /TN "${TASK_TRACKER}" /TR "\"$WINDIR\System32\wscript.exe\" //B \"$INSTDIR\run_tracker_hidden.vbs\"" /SC ONLOGON /F /RL LIMITED'
+  Pop $0
   ${If} $0 != 0
-    MessageBox MB_ICONEXCLAMATION|MB_OK "OAuth login did not complete (exit=$0).$\r$\n$\r$\nYou can re-run it later:$\r$\n  $INSTDIR\.venv\Scripts\python.exe -m promem_agent init"
+    MessageBox MB_ICONEXCLAMATION|MB_OK "Failed to register ${TASK_TRACKER}.$\r$\n$\r$\nYou can register it manually from Command Prompt."
   ${EndIf}
 
-  ; --- Uninstaller + Add/Remove Programs entry --------------------------
+  ; --- Step 4: Trigger one-time OAuth login -------------------------------
+  DetailPrint "Opening browser for one-time login (Google / Supabase)..."
+  ExecWait '"$INSTDIR\bin\promem_agent\promem_agent.exe" init' $0
+  ${If} $0 != 0
+    MessageBox MB_ICONEXCLAMATION|MB_OK "OAuth login did not complete (exit=$0).$\r$\n$\r$\nYou can re-run later:$\r$\n  $INSTDIR\bin\promem_agent\promem_agent.exe init"
+  ${EndIf}
+
+  ; --- Step 5: Start tracker silently + open wiki -------------------------
+  DetailPrint "Starting tracker in background..."
+  Exec '"$WINDIR\System32\wscript.exe" //B "$INSTDIR\run_tracker_hidden.vbs"'
+  ExecShell "open" "https://promem.fly.dev/wiki"
+
+  ; --- Uninstaller + Add/Remove Programs entry ---------------------------
   WriteUninstaller "$INSTDIR\uninstall.exe"
   WriteRegStr   HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME_SHORT}" "DisplayName"     "${APPNAME}"
   WriteRegStr   HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME_SHORT}" "DisplayVersion"  "${AGENT_VERSION}"
@@ -138,24 +127,35 @@ SectionEnd
 
 ; -- Uninstall section ---------------------------------------------------
 Section "Uninstall"
-  DetailPrint "Removing '${TASK_NAME}' scheduled task..."
-  nsExec::ExecToStack 'cmd /c schtasks /Delete /TN "${TASK_NAME}" /F'
-  Pop $0  ; ignore exit code - task may already be missing
+  DetailPrint "Removing scheduled tasks..."
+  nsExec::ExecToStack 'cmd /c schtasks /Delete /TN "${TASK_AGENT}" /F'
+  Pop $0
+  nsExec::ExecToStack 'cmd /c schtasks /Delete /TN "${TASK_TRACKER}" /F'
+  Pop $0
 
-  DetailPrint "Removing program files..."
-  RMDir /r "$INSTDIR\promem_agent"
-  RMDir /r "$INSTDIR\.venv"
-  Delete   "$INSTDIR\runner.bat"
-  Delete   "$INSTDIR\requirements-agent.txt"
+  DetailPrint "Stopping tracker process (best effort)..."
+  nsExec::ExecToStack 'cmd /c taskkill /F /IM promem_tracker.exe >nul 2>&1'
+  Pop $0
+
+  DetailPrint "Removing installed binaries + launchers..."
+  RMDir /r "$INSTDIR\bin\promem_agent"
+  RMDir /r "$INSTDIR\bin\promem_tracker"
+  RMDir /r "$INSTDIR\bin"
+  Delete   "$INSTDIR\run_agent_hidden.vbs"
+  Delete   "$INSTDIR\run_tracker_hidden.vbs"
   Delete   "$INSTDIR\uninstall.exe"
 
-  ; State files (logs, sync state) are user data - ask before deleting.
-  MessageBox MB_YESNO "Also remove agent state files (sync log, last-uploaded marker, staged updates)?$\r$\n$\r$\nNote: your refresh token in Windows Credential Manager must be removed manually via Control Panel -> Credential Manager -> Windows Credentials -> 'ProMem'." IDNO done_data
+  ; User data (logs/state/db) — ask before deleting.
+  MessageBox MB_YESNO "Also remove local data files (tracker.db, state files, logs)?$\r$\n$\r$\nNote: refresh token in Credential Manager must still be removed manually via Control Panel -> Credential Manager -> Windows Credentials -> 'ProMem'." IDNO done_data
     Delete   "$INSTDIR\agent.log*"
     Delete   "$INSTDIR\agent_state.json"
     Delete   "$INSTDIR\.pending_update.json"
     Delete   "$INSTDIR\.last_update_check"
     RMDir /r "$INSTDIR\staged"
+    Delete   "$INSTDIR\tracker.db"
+    Delete   "$INSTDIR\tracker.db-shm"
+    Delete   "$INSTDIR\tracker.db-wal"
+    RMDir /r "$INSTDIR\logs"
   done_data:
 
   RMDir "$INSTDIR"  ; only removes if empty

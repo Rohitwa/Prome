@@ -84,7 +84,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         peek = w.fetch_new_segments(limit=1)
         if peek:
             print(f"\nFound queued segments in tracker.db (first ts={peek[0]['timestamp_start']}).")
-            print("To preview the queue:   python3 -m promem_agent dry-run")
+            print("To preview the queue:   promem_agent dry-run")
         else:
             print("\nNo queued segments yet.")
 
@@ -159,7 +159,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
         return 0
     except oauth.AuthError as e:
-        log.error("AuthError: %s — re-run `python3 -m promem_agent init` to recover", e)
+        log.error("AuthError: %s — re-run `promem_agent init` to recover", e)
         return 2
     except UploadError as e:
         log.error("UploadError: %s", e)

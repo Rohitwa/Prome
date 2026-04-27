@@ -79,8 +79,17 @@ def _manifest_url() -> str:
 
 # ── Dev-mode detection ───────────────────────────────────────────────────
 def is_dev_install() -> bool:
-    """True if running from the source repo (no INSTALLED_VERSION marker).
-    All auto-update functions become no-ops in dev mode."""
+    """Return True when auto-update should be disabled.
+
+    Auto-update is disabled when:
+    - Running from a frozen executable build (PyInstaller onefile/onedir).
+    - PROMEM_AGENT_DISABLE_AUTO_UPDATE is set to 1/true/yes.
+    - Running from source with no INSTALLED_VERSION marker.
+    """
+    if getattr(sys, "frozen", False):
+        return True
+    if os.environ.get("PROMEM_AGENT_DISABLE_AUTO_UPDATE", "").strip().lower() in ("1", "true", "yes"):
+        return True
     return not (_install_dir() / "INSTALLED_VERSION").exists()
 
 
