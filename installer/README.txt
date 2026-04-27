@@ -55,6 +55,7 @@ BUILDING THE WINDOWS PAYLOAD
 ----------------------------
 Run on a Windows x64 build machine:
 
+  - Install Python 3.12 x64 (with the `py` launcher).
   powershell -ExecutionPolicy Bypass -File installer\build_pyinstaller_windows.ps1
 
 Then compile installer (makensis) from this repo:

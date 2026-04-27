@@ -18,7 +18,7 @@ Optional environment variables:
   PROMEM_TRACKER_ENTRY Optional explicit tracker entry script path.
                        Defaults to <PROMEM_TRACKER_SRC>\src\agent\tracker.py
 
-  PROMEM_BUILD_PYTHON  Python executable to use (default: py -3.11, then py -3, then python)
+  PROMEM_BUILD_PYTHON  Python executable to use (default: py -3.12, then py -3.11, then py -3, then python)
 
 #>
 
@@ -56,14 +56,19 @@ if ($env:PROMEM_BUILD_PYTHON) {
   $PythonCmdParts = @($env:PROMEM_BUILD_PYTHON)
 } else {
   try {
-    py -3.11 -c "import sys" *> $null
-    $PythonCmdParts = @('py', '-3.11')
+    py -3.12 -c "import sys" *> $null
+    $PythonCmdParts = @('py', '-3.12')
   } catch {
     try {
-      py -3 -c "import sys" *> $null
-      $PythonCmdParts = @('py', '-3')
+      py -3.11 -c "import sys" *> $null
+      $PythonCmdParts = @('py', '-3.11')
     } catch {
-      $PythonCmdParts = @('python')
+      try {
+        py -3 -c "import sys" *> $null
+        $PythonCmdParts = @('py', '-3')
+      } catch {
+        $PythonCmdParts = @('python')
+      }
     }
   }
 }
