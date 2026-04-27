@@ -98,12 +98,38 @@ cp     installer/setup.bat   "$STAGE_DIR/"
 cp     installer/uninstall.bat "$STAGE_DIR/"
 cp     installer/README.txt  "$STAGE_DIR/"
 
+# Bundle productivity-tracker source. Path is overridable via env var so we
+# can release from a worktree branch during development; default points at
+# the live mainline tracker on the user's Mac.
+TRACKER_SRC="${PROMEM_TRACKER_SRC:-/Users/rohitsingh/Desktop/memory/.claude/worktrees/tracker-act-monitor/productivity-tracker}"
+if [ ! -d "$TRACKER_SRC" ]; then
+  echo "error: productivity-tracker source not found at $TRACKER_SRC" >&2
+  echo "       Override with PROMEM_TRACKER_SRC=<path> if it lives elsewhere." >&2
+  exit 1
+fi
+echo "  tracker source: $TRACKER_SRC"
+mkdir -p "$STAGE_DIR/productivity-tracker"
+# Use rsync if available for clean exclusion of dev artifacts; fall back to cp.
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a \
+    --exclude '.venv/' --exclude '__pycache__/' --exclude '*.pyc' \
+    --exclude 'tests/' --exclude '.pytest_cache/' --exclude '.git/' \
+    --exclude '.DS_Store' --exclude 'productivity_tracker.egg-info/' \
+    --exclude 'data/' --exclude '*.db' --exclude '*.db-*' \
+    --exclude 'src/ui/dashboard/node_modules/' \
+    "$TRACKER_SRC/" "$STAGE_DIR/productivity-tracker/"
+else
+  cp -r "$TRACKER_SRC/." "$STAGE_DIR/productivity-tracker/"
+fi
+
 # Bake INSTALLED_VERSION into the staged copy (so updater.is_dev_install()
 # returns False on installed machines). Source repo stays untouched.
 echo "$VERSION" > "$STAGE_DIR/promem_agent/INSTALLED_VERSION"
 
 find "$STAGE_DIR" -name '__pycache__' -type d -prune -exec rm -rf {} +
 find "$STAGE_DIR" -name '*.pyc' -delete
+find "$STAGE_DIR" -name '.DS_Store' -delete
+find "$STAGE_DIR/productivity-tracker" -path '*/.venv*' -prune -exec rm -rf {} + 2>/dev/null || true
 
 # Zip from inside the stage dir for flat paths (no leading temp/ prefix).
 ( cd "$STAGE_DIR" && zip -qr "$OLDPWD/$DIST_ZIP" . )

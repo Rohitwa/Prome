@@ -1,7 +1,16 @@
-ProMem Agent - Windows installer
-=================================
+ProMem - Windows installer
+==========================
 
-This zip contains the ProMem agent + a small Windows installer batch script.
+This zip installs both pieces of the ProMem productivity pipeline:
+
+  1. productivity-tracker  Captures screenshots of your work, runs OpenAI
+                           Vision on them, writes summaries to a local
+                           tracker.db. Runs continuously after logon.
+
+  2. promem_agent          Uploads new tracker.db rows to the ProMem cloud
+                           every 5 minutes via the cloud /api/upload-segments
+                           endpoint. Cloud orchestrator turns them into
+                           wiki pages at https://promem.fly.dev/wiki.
 
 REQUIREMENTS
 ------------
@@ -17,18 +26,38 @@ INSTALL
      - Verify Python 3.10+
      - Create a per-user install at  %LOCALAPPDATA%\ProMem
      - Set up a virtual environment with required packages
-     - Register a Task Scheduler entry to run every 5 minutes
+     - Install productivity-tracker (no chromadb / PMIS extras - lean mode)
+     - Register two Task Scheduler entries:
+         "ProMem Agent"   -> every 5 min (uploads to cloud)
+         "ProMem Tracker" -> at logon (long-lived capture loop)
      - Open your browser once for Google login
+     - Start the tracker right away
+     - Open https://promem.fly.dev/wiki in your default browser
 
-The agent then runs silently in the background, uploading new tracker
-segments to ProMem cloud every 5 minutes. Updates are automatic.
+After install, the tracker runs continuously in the background, and your
+wiki at promem.fly.dev/wiki populates as data accumulates (data appears
+within ~30 minutes; full wiki cards rebuild twice daily).
+
+OPENAI KEY
+----------
+You do NOT need to provide your own OpenAI API key. The tracker routes
+all OpenAI calls through the ProMem Cloudflare Worker
+(promem-openai-proxy.yantrai.workers.dev), which authenticates each call
+with your Supabase JWT. The Worker holds the centralized OpenAI key.
 
 STATUS
 ------
 Open a Command Prompt and run:
-  "%LOCALAPPDATA%\ProMem\.venv\Scripts\python.exe" -m promem_agent status
+  cd /d "%LOCALAPPDATA%\ProMem"
+  .venv\Scripts\python.exe -m promem_agent status
+
+Expected output:
+  auth:       ok logged in as <your-email>
+  tracker.db: ok  (path)
+  state:      last_uploaded_ts=<recent-timestamp>
 
 UNINSTALL
 ---------
 Double-click  %LOCALAPPDATA%\ProMem\uninstall.bat
-(Refresh token in Credential Manager must be removed manually.)
+(Refresh token in Credential Manager must be removed manually:
+ Control Panel -> Credential Manager -> Windows Credentials -> 'ProMem')

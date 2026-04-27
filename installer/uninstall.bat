@@ -8,16 +8,20 @@ REM  Refresh token in Windows Credential Manager must be removed manually
 REM  via Control Panel -> Credential Manager -> 'ProMem'.
 REM ======================================================================
 
-set "TASK_NAME=ProMem Agent"
+set "TASK_AGENT=ProMem Agent"
+set "TASK_TRACKER=ProMem Tracker"
 set "INSTALL_DIR=%LOCALAPPDATA%\ProMem"
 
 echo.
-echo Uninstalling ProMem Agent...
+echo Uninstalling ProMem...
 echo.
 
-REM --- Step 1: Remove scheduled task -------------------------------------
-echo [1/2] Removing scheduled task...
-schtasks /Delete /TN "%TASK_NAME%" /F >nul 2>&1
+REM --- Step 1: Remove scheduled tasks ------------------------------------
+echo [1/2] Removing scheduled tasks (agent + tracker)...
+schtasks /Delete /TN "%TASK_AGENT%" /F >nul 2>&1
+schtasks /Delete /TN "%TASK_TRACKER%" /F >nul 2>&1
+REM Best-effort: kill any running tracker process so the install dir can be removed.
+taskkill /F /IM python.exe /FI "WINDOWTITLE eq ProMem Tracker*" >nul 2>&1
 
 REM --- Step 2: Remove install dir ----------------------------------------
 echo [2/2] Removing install dir at %INSTALL_DIR% ...

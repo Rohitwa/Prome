@@ -2,28 +2,34 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 REM ======================================================================
-REM  ProMem Agent installer (Windows .bat)
+REM  ProMem installer (Windows .bat)
+REM
+REM  Installs both:
+REM    - productivity-tracker  (captures screenshots -> tracker.db, local)
+REM    - promem_agent          (uploads tracker.db.context_1 -> cloud, every 5 min)
+REM
 REM  Per-user install at %LOCALAPPDATA%\ProMem; no admin rights needed.
-REM  Run by double-clicking, after extracting the agent zip.
+REM  Run by double-clicking, after extracting the zip.
 REM ======================================================================
 
 set "APPNAME=ProMem"
-set "TASK_NAME=ProMem Agent"
+set "TASK_AGENT=ProMem Agent"
+set "TASK_TRACKER=ProMem Tracker"
 set "INSTALL_DIR=%LOCALAPPDATA%\%APPNAME%"
+set "TRACKER_DIR=%INSTALL_DIR%\productivity-tracker"
+set "TRACKER_DB=%INSTALL_DIR%\tracker.db"
 set "SRC_DIR=%~dp0"
 
-REM Anchor cwd to this script's directory so `python -m promem_agent` (later)
-REM finds the package, regardless of where the script was invoked from.
 cd /d "%SRC_DIR%"
 
 echo.
 echo ========================================================
-echo   ProMem Agent installer
+echo   ProMem installer (tracker + cloud agent)
 echo ========================================================
 echo.
 
 REM --- Step 1: Detect Python ----------------------------------------------
-echo [1/8] Checking for Python on PATH...
+echo [1/10] Checking for Python on PATH...
 where python >nul 2>&1
 if errorlevel 1 (
     echo.
@@ -38,7 +44,7 @@ if errorlevel 1 (
 )
 
 REM --- Step 2: Verify version >= 3.10 ------------------------------------
-echo [2/8] Verifying Python version is 3.10 or newer...
+echo [2/10] Verifying Python version is 3.10 or newer...
 python -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)"
 if errorlevel 1 (
     echo.
@@ -49,17 +55,23 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-for /f "delims=" %%v in ('python --version') do echo       Found: %%v
+for /f "delims=" %%v in ('python --version') do echo        Found: %%v
 
 REM --- Step 3: Create install dir ----------------------------------------
-echo [3/8] Creating install dir at %INSTALL_DIR% ...
+echo [3/10] Creating install dir at %INSTALL_DIR% ...
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
-REM --- Step 4: Copy agent files ------------------------------------------
-echo [4/8] Copying agent files...
+REM --- Step 4: Copy agent + tracker source -------------------------------
+echo [4/10] Copying agent and tracker source...
 xcopy /E /I /Y /Q "%SRC_DIR%promem_agent" "%INSTALL_DIR%\promem_agent\" >nul
 if errorlevel 1 (
     echo ERROR: Could not copy promem_agent\ from %SRC_DIR%
+    pause
+    exit /b 1
+)
+xcopy /E /I /Y /Q "%SRC_DIR%productivity-tracker" "%TRACKER_DIR%\" >nul
+if errorlevel 1 (
+    echo ERROR: Could not copy productivity-tracker\ from %SRC_DIR%
     pause
     exit /b 1
 )
@@ -67,9 +79,9 @@ copy /Y "%SRC_DIR%requirements-agent.txt" "%INSTALL_DIR%\" >nul
 if exist "%SRC_DIR%uninstall.bat" copy /Y "%SRC_DIR%uninstall.bat" "%INSTALL_DIR%\" >nul
 
 REM --- Step 5: Create venv -----------------------------------------------
-echo [5/8] Creating virtual environment at %INSTALL_DIR%\.venv ...
+echo [5/10] Creating virtual environment at %INSTALL_DIR%\.venv ...
 if exist "%INSTALL_DIR%\.venv" (
-    echo       venv already exists; skipping create.
+    echo        venv already exists; skipping create.
 ) else (
     python -m venv "%INSTALL_DIR%\.venv"
     if errorlevel 1 (
@@ -80,54 +92,92 @@ if exist "%INSTALL_DIR%\.venv" (
     )
 )
 
-REM --- Step 6: Install deps ----------------------------------------------
-echo [6/8] Installing Python dependencies (keyring, httpx, pyjwt)...
+REM --- Step 6: Install agent dependencies --------------------------------
+echo [6/10] Installing agent dependencies (keyring, httpx, pyjwt)...
 "%INSTALL_DIR%\.venv\Scripts\pip.exe" install --quiet --disable-pip-version-check --upgrade -r "%INSTALL_DIR%\requirements-agent.txt"
 if errorlevel 1 (
-    echo ERROR: pip install failed. Check your internet connection and re-run.
+    echo ERROR: pip install of agent dependencies failed. Check your internet connection.
     pause
     exit /b 1
 )
 
-REM --- Step 7: Write runner.bat + register Task Scheduler ----------------
-echo [7/8] Writing runner.bat and registering scheduled task...
-REM `cd /d` is critical: Task Scheduler invokes runner.bat with a
-REM Windows-default cwd (often System32) where Python wouldn't find the
-REM promem_agent package on sys.path. cd to install dir first.
+REM --- Step 7: Install productivity-tracker package (Promem-minimal) -----
+echo [7/10] Installing productivity-tracker package (Promem-minimal mode)...
+REM No `[pmis]` extras: chromadb stays out, PMIS subsystems gate to no-op.
+"%INSTALL_DIR%\.venv\Scripts\pip.exe" install --quiet --disable-pip-version-check "%TRACKER_DIR%"
+if errorlevel 1 (
+    echo ERROR: pip install of productivity-tracker failed. Check your internet connection.
+    pause
+    exit /b 1
+)
+
+REM --- Step 8: Write runner scripts and register scheduled tasks ---------
+echo [8/10] Writing runner scripts and registering 2 scheduled tasks...
+
+REM agent runner: every 5 min upload of tracker.db -> cloud
 > "%INSTALL_DIR%\runner.bat" (
     echo @echo off
-    echo REM ProMem runner - invoked by Task Scheduler every 5 min.
+    echo REM ProMem agent runner - invoked by Task Scheduler every 5 min.
+    echo set PROMEM_TRACKER_DB=%TRACKER_DB%
     echo cd /d "%INSTALL_DIR%"
     echo "%INSTALL_DIR%\.venv\Scripts\python.exe" -m promem_agent run
     echo exit /b %%errorlevel%%
 )
 
-schtasks /Create /TN "%TASK_NAME%" /TR "\"%INSTALL_DIR%\runner.bat\"" /SC MINUTE /MO 5 /F /RL LIMITED >nul
-if errorlevel 1 (
-    echo WARNING: Failed to register the scheduled task automatically.
-    echo          You can register it manually:
-    echo            schtasks /Create /TN "%TASK_NAME%" /TR "\"%INSTALL_DIR%\runner.bat\"" /SC MINUTE /MO 5 /F
+REM tracker runner: long-lived, captures screenshots and writes context_1/2.
+REM OPENAI_USE_PROXY=true routes OpenAI calls through the Promem Cloudflare
+REM Worker (no per-user OpenAI key needed).
+> "%INSTALL_DIR%\tracker_runner.bat" (
+    echo @echo off
+    echo REM ProMem tracker runner - long-lived, started at logon.
+    echo set OPENAI_USE_PROXY=true
+    echo set PROMEM_TRACKER_DB=%TRACKER_DB%
+    echo cd /d "%TRACKER_DIR%"
+    echo "%INSTALL_DIR%\.venv\Scripts\python.exe" -m src.agent.tracker
+    echo exit /b %%errorlevel%%
 )
 
-REM --- Step 8: Trigger one-time OAuth login ------------------------------
-echo [8/8] Opening browser for one-time login (Google / Supabase)...
+schtasks /Create /TN "%TASK_AGENT%" /TR "\"%INSTALL_DIR%\runner.bat\"" /SC MINUTE /MO 5 /F /RL LIMITED >nul
+if errorlevel 1 (
+    echo WARNING: Failed to register the agent scheduled task.
+)
+
+schtasks /Create /TN "%TASK_TRACKER%" /TR "\"%INSTALL_DIR%\tracker_runner.bat\"" /SC ONLOGON /F /RL LIMITED >nul
+if errorlevel 1 (
+    echo WARNING: Failed to register the tracker scheduled task.
+)
+
+REM --- Step 9: Trigger one-time OAuth login ------------------------------
+echo [9/10] Opening browser for one-time login (Google / Supabase)...
 "%INSTALL_DIR%\.venv\Scripts\python.exe" -m promem_agent init
 if errorlevel 1 (
     echo.
     echo NOTE: OAuth login did not complete. You can re-run it later:
-    echo   "%INSTALL_DIR%\.venv\Scripts\python.exe" -m promem_agent init
+    echo   cd /d "%INSTALL_DIR%"
+    echo   .venv\Scripts\python.exe -m promem_agent init
 )
+
+REM --- Step 10: Start tracker now + open wiki dashboard ------------------
+echo [10/10] Starting tracker now and opening your wiki...
+REM Spawn tracker_runner.bat in a new window so this script can finish.
+start "ProMem Tracker" /B cmd /c "%INSTALL_DIR%\tracker_runner.bat"
+start "" "https://promem.fly.dev/wiki"
 
 echo.
 echo ========================================================
-echo  ProMem Agent installed!
+echo  ProMem installed!
 echo.
-echo  Status check at any time (cd first so Python finds the package):
+echo  Tracker:  running now (and on every logon)
+echo  Agent:    runs every 5 min, uploads to cloud
+echo  Wiki:     https://promem.fly.dev/wiki
+echo.
+echo  Check status:
 echo    cd /d "%INSTALL_DIR%"
 echo    .venv\Scripts\python.exe -m promem_agent status
 echo.
-echo  Log file:
-echo    %INSTALL_DIR%\agent.log
+echo  Logs:
+echo    Agent:   %INSTALL_DIR%\agent.log
+echo    Tracker: %TRACKER_DIR%\logs\ (if configured)
 echo.
 echo  Uninstall:
 echo    "%INSTALL_DIR%\uninstall.bat"
