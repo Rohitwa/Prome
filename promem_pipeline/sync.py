@@ -81,7 +81,7 @@ def _fetch_segments_from_cloud(user_id: str, cutoff: str) -> list:
     return rows
 
 
-def sync_work_pages(tracker_db: str | Path = DEFAULT_TRACKER) -> dict:
+def sync_work_pages(tracker_db: str | Path = DEFAULT_TRACKER, *, user_id: str | None = None) -> dict:
     """Read new segments and insert them into prome.work_pages.
 
     Source is controlled by PROMEM_SYNC_SOURCE:
@@ -90,7 +90,8 @@ def sync_work_pages(tracker_db: str | Path = DEFAULT_TRACKER) -> dict:
 
     Returns counts. Does not write to tracker.db.
     """
-    user_id = db.user_id()
+    if user_id is None:
+        user_id = db.user_id()  # Mac CLI fallback (PROMEM_USER_ID env)
     cutoff = _cutoff(user_id)
     source = os.environ.get("PROMEM_SYNC_SOURCE", "tracker").strip().lower()
 

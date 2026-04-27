@@ -98,10 +98,11 @@ def get_state() -> dict:
         return dict(row) if row else {}
 
 
-def update_state(**fields) -> None:
+def update_state(*, user_id: str | None = None, **fields) -> None:
     if not fields:
         return
-    user_id = db.user_id()
+    if user_id is None:
+        user_id = db.user_id()  # Mac CLI fallback
     cols = ", ".join(f"{k} = %s" for k in fields)
     with db.conn() as c:
         # Ensure the row exists, then update.
@@ -159,9 +160,9 @@ def _next_due(now: datetime) -> datetime:
 # ──────────────────────────────────────────────────────────────────────────────
 # Phases
 # ──────────────────────────────────────────────────────────────────────────────
-def phase_sync() -> dict:
+def phase_sync(*, user_id: str | None = None) -> dict:
     from promem_pipeline.sync import sync_work_pages
-    r = sync_work_pages()
+    r = sync_work_pages(user_id=user_id)
     if r.get("skipped"):
         print(f"  · phase_sync: skipped — {r.get('reason', '')}")
     else:
@@ -169,9 +170,9 @@ def phase_sync() -> dict:
     return r
 
 
-def phase_classify() -> dict:
+def phase_classify(*, user_id: str | None = None) -> dict:
     from promem_pipeline.classify import classify_all
-    r = classify_all()
+    r = classify_all(user_id=user_id)
     if r.get("skipped"):
         print(f"  · phase_classify: skipped — {r.get('reason', '')}")
     else:
@@ -180,17 +181,17 @@ def phase_classify() -> dict:
     return r
 
 
-def phase_filter() -> dict:
+def phase_filter(*, user_id: str | None = None) -> dict:
     from promem_pipeline.filter import filter_pages
-    r = filter_pages()
+    r = filter_pages(user_id=user_id)
     print(f"  · phase_filter: keep={r['n_keep']} archive={r['n_archive']} "
           f"unfiled={r['n_unfiled']} unclassified={r['n_unclassified']}")
     return r
 
 
-def phase_match() -> dict:
+def phase_match(*, user_id: str | None = None) -> dict:
     from promem_pipeline.matcher import match_all
-    r = match_all()
+    r = match_all(user_id=user_id)
     if r.get("skipped"):
         print(f"  · phase_match: skipped — {r.get('reason', '')}")
     else:
@@ -199,9 +200,9 @@ def phase_match() -> dict:
     return r
 
 
-def phase_synthesis() -> dict:
+def phase_synthesis(*, user_id: str | None = None) -> dict:
     from promem_pipeline.synthesis import synthesize_all
-    r = synthesize_all()
+    r = synthesize_all(user_id=user_id)
     if r.get("skipped"):
         print(f"  · phase_synthesis: skipped — {r.get('reason', '')}")
     else:
@@ -224,20 +225,33 @@ PHASES = [
 # Entry points
 # ──────────────────────────────────────────────────────────────────────────────
 def run_full(reason: str = "manual") -> dict:
+    """Mac CLI entry. Reads PROMEM_USER_ID env, runs all phases for that user."""
+    return run_full_for_user(db.user_id(), reason=reason)
+
+
+def run_full_for_user(user_id: str, reason: str = "cloud", *,
+                      phases: list | None = None) -> dict:
+    """Cloud-friendly entry: explicit user_id, no env-var dependency.
+
+    `phases` defaults to all five (sync→classify→filter→match→synthesis); pass
+    a subset list[(name, fn, state_col)] for the split fast/slow loops in 4c.5c
+    (e.g. fast loop = [PHASES[0]], slow loop = PHASES[1:])."""
     now_iso = datetime.now().isoformat(timespec="seconds")
-    print(f"orchestrator: run_full ({reason}) at {now_iso} for user {db.user_id()}")
+    print(f"orchestrator: run_full ({reason}) at {now_iso} for user {user_id}")
     results = []
+    use_phases = phases if phases is not None else PHASES
     try:
-        for name, fn, state_col in PHASES:
-            r = fn()
+        for name, fn, state_col in use_phases:
+            r = fn(user_id=user_id)
             results.append(r)
             if state_col and r.get("ok"):
-                update_state(**{state_col: now_iso})
-        update_state(next_due=_next_due(datetime.now()).isoformat(timespec="seconds"),
+                update_state(user_id=user_id, **{state_col: now_iso})
+        update_state(user_id=user_id,
+                     next_due=_next_due(datetime.now()).isoformat(timespec="seconds"),
                      last_error="")
         return {"ok": True, "reason": reason, "phases": results}
     except Exception as e:
-        update_state(last_error=str(e))
+        update_state(user_id=user_id, last_error=str(e))
         raise
 
 

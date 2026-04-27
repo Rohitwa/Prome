@@ -100,8 +100,9 @@ def _load_pages(c, user_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def match_all() -> dict:
-    user_id = db.user_id()
+def match_all(*, user_id: str | None = None) -> dict:
+    if user_id is None:
+        user_id = db.user_id()  # Mac CLI fallback (PROMEM_USER_ID env)
     now = datetime.now().isoformat(timespec="seconds")
 
     with db.conn() as c:

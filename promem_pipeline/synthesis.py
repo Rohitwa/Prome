@@ -229,8 +229,9 @@ def _synth_one_deliv(item: dict) -> tuple[str, dict]:
     return item["id"], _llm_json(prompt, max_tokens=1500)
 
 
-def synthesize_all(force: bool = False) -> dict:
-    user_id = db.user_id()
+def synthesize_all(force: bool = False, *, user_id: str | None = None) -> dict:
+    if user_id is None:
+        user_id = db.user_id()  # Mac CLI fallback (PROMEM_USER_ID env)
     now = datetime.now().isoformat(timespec="seconds")
 
     with db.conn() as c:

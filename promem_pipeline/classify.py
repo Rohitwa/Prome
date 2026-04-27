@@ -157,8 +157,10 @@ def _classify_batch(allowed_scs: list[str], batch: list[dict]) -> list[dict]:
 
 def classify_all(limit: int | None = None,
                  batch_size: int = BATCH_SIZE,
-                 concurrency: int = CONCURRENCY) -> dict:
-    user_id = db.user_id()
+                 concurrency: int = CONCURRENCY,
+                 *, user_id: str | None = None) -> dict:
+    if user_id is None:
+        user_id = db.user_id()  # Mac CLI fallback (PROMEM_USER_ID env)
     with db.conn() as c:
         allowed = _allowed_scs(c, user_id)
         known = set(allowed)

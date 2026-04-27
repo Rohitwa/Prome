@@ -13,8 +13,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import db
 
 
-def filter_pages() -> dict:
-    user_id = db.user_id()
+def filter_pages(*, user_id: str | None = None) -> dict:
+    if user_id is None:
+        user_id = db.user_id()  # Mac CLI fallback (PROMEM_USER_ID env)
     with db.conn() as c:
         cur = c.execute("""
             UPDATE work_pages
