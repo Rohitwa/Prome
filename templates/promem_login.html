@@ -74,10 +74,23 @@
 
   const statusEl = document.getElementById('status')
   const btn = document.getElementById('signin')
+  const RELAY_PREFIX = 'http://127.0.0.1:53682/callback'
 
   function setStatus(msg, isError) {
     statusEl.textContent = msg || ''
     statusEl.className = 'status' + (isError ? ' error' : '')
+  }
+
+  function isLocalRelayTarget(nextUrl) {
+    return (nextUrl || '').startsWith(RELAY_PREFIX)
+  }
+
+  function relayTokensToLocal(nextUrl, accessToken, refreshToken) {
+    const u = new URL(nextUrl)
+    u.searchParams.set('access_token', accessToken || '')
+    u.searchParams.set('refresh_token', refreshToken || '')
+    u.searchParams.set('source', 'promem_login')
+    window.location.href = u.toString()
   }
 
   async function settleSession() {
@@ -86,6 +99,8 @@
     // (#access_token=...) and PKCE (?code=...) redirect shapes.
     const hashParams = new URLSearchParams(window.location.hash.slice(1))
     let token = hashParams.get('access_token')
+    let refreshToken = hashParams.get('refresh_token')
+    const relayMode = isLocalRelayTarget(NEXT)
 
     if (!token) {
       const code = new URLSearchParams(window.location.search).get('code')
@@ -94,8 +109,34 @@
         const { data, error } = await supabase.auth.exchangeCodeForSession(code)
         if (error) { setStatus('Auth error: ' + error.message, true); return false }
         token = data && data.session ? data.session.access_token : null
+        refreshToken = data && data.session ? data.session.refresh_token : null
       }
     }
+
+    // Best-effort session read if refresh_token was not present in hash.
+    if (!refreshToken && token) {
+      try {
+        const { data } = await supabase.auth.getSession()
+        refreshToken = data && data.session ? data.session.refresh_token : null
+      } catch (_) {}
+    }
+
+    if (relayMode) {
+      if (!token || !refreshToken) {
+        return false
+      }
+      setStatus('Finalizing login…')
+      try {
+        await fetch('/auth/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ access_token: token }),
+        })
+      } catch (_) {}
+      relayTokensToLocal(NEXT, token, refreshToken)
+      return true
+    }
+
     if (!token) return false  // nothing to do, just show the sign-in button
 
     setStatus('Signing you in…')

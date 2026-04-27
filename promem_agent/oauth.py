@@ -1,9 +1,8 @@
 """Phase 4b.1 — OAuth flow + cross-platform secret storage.
 
-First run: opens system browser to Supabase Google OAuth, captures the
-auth code via a local listener on 127.0.0.1:53682, exchanges it for a
-refresh_token via PKCE, and stores the refresh_token in the OS keyring
-(Windows Credential Manager / macOS Keychain / Linux Secret Service).
+First run: opens system browser to hosted ProMem login, which performs
+Google OAuth via Supabase and relays access + refresh tokens back to a
+local callback listener on 127.0.0.1:53682.
 
 Subsequent runs: reads the stored refresh_token, exchanges it for a fresh
 access_token. No browser involved.
@@ -13,10 +12,6 @@ CLI:
     python3 -m promem_agent.oauth refresh  # use stored refresh_token, print first 30 chars
     python3 -m promem_agent.oauth logout   # clear stored refresh_token
     python3 -m promem_agent.oauth whoami   # decode current access_token, print payload
-
-One-time Supabase setup required (do this in Dashboard before `login`):
-    Authentication → URL Configuration → Redirect URLs → add
-        http://127.0.0.1:53682/callback
 """
 
 from __future__ import annotations
@@ -43,6 +38,7 @@ KEYRING_USER    = "refresh_token"
 LOCAL_PORT      = 53682
 LOCAL_REDIRECT  = f"http://127.0.0.1:{LOCAL_PORT}/callback"
 BROWSER_TIMEOUT = 120  # seconds to wait for user to complete browser auth
+DEFAULT_PROMEM_LOGIN_URL = "https://promem.fly.dev/login"
 
 # Public values — same as those embedded in any Supabase frontend bundle
 # (the anon key is designed for client-side use; RLS enforces data isolation
@@ -108,10 +104,14 @@ def _supabase_anon_key() -> str:
     return key if key else DEFAULT_SUPABASE_ANON_KEY
 
 
-# ── PKCE helpers ─────────────────────────────────────────────────────────
+def _promem_login_url() -> str:
+    url = os.environ.get("PROMEM_LOGIN_URL", DEFAULT_PROMEM_LOGIN_URL).strip().rstrip("/")
+    return url if url else DEFAULT_PROMEM_LOGIN_URL
+
+
+# ── PKCE helpers (kept for compatibility/testing) ───────────────────────
 def _make_pkce_pair() -> tuple[str, str]:
-    """Return (code_verifier, code_challenge). Verifier is 43-128 random
-    URL-safe chars; challenge is BASE64URL(SHA256(verifier))."""
+    """Return (code_verifier, code_challenge)."""
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(64)).decode().rstrip("=")
     challenge = base64.urlsafe_b64encode(
         hashlib.sha256(verifier.encode()).digest()
@@ -123,6 +123,8 @@ def _make_pkce_pair() -> tuple[str, str]:
 class _CallbackServer(http.server.HTTPServer):
     code: Optional[str] = None
     error: Optional[str] = None
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
 
 
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
@@ -135,10 +137,15 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         params = urllib.parse.parse_qs(parsed.query)
+        access = params.get("access_token", [None])[0]
+        refresh = params.get("refresh_token", [None])[0]
         code = params.get("code", [None])[0]
         err = params.get("error_description", params.get("error", [None]))[0]
         if err:
             self.server.error = err
+        elif access and refresh:
+            self.server.access_token = access
+            self.server.refresh_token = refresh
         elif code:
             self.server.code = code
         self.send_response(200)
@@ -175,8 +182,7 @@ def _exchange_pkce(auth_code: str, code_verifier: str) -> dict:
 
 
 def _exchange_refresh(refresh_token: str) -> dict:
-    """POST /auth/v1/token?grant_type=refresh_token → fresh tokens.
-    Supabase rotates refresh_tokens, so save whatever comes back."""
+    """POST /auth/v1/token?grant_type=refresh_token → fresh tokens."""
     r = httpx.post(
         f"{_supabase_url()}/auth/v1/token",
         params={"grant_type": "refresh_token"},
@@ -191,38 +197,53 @@ def _exchange_refresh(refresh_token: str) -> dict:
 
 # ── Public API ───────────────────────────────────────────────────────────
 def first_run_login() -> str:
-    """Run the full OAuth flow. Opens browser, captures code via local
-    listener, exchanges for tokens, stores refresh_token in keyring.
-    Returns access_token. Raises AuthError on failure."""
-    verifier, challenge = _make_pkce_pair()
-    auth_url = f"{_supabase_url()}/auth/v1/authorize?" + urllib.parse.urlencode({
-        "provider": "google",
-        "redirect_to": LOCAL_REDIRECT,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-    })
+    """Run OAuth through hosted ProMem login, then relay tokens locally.
+
+    Browser opens https://promem.fly.dev/login?next=<LOCAL_REDIRECT>.
+    The hosted login page should exchange auth code for session tokens and
+    redirect LOCAL_REDIRECT with access_token + refresh_token query params.
+    """
+    login_url = f"{_promem_login_url()}?" + urllib.parse.urlencode({"next": LOCAL_REDIRECT})
 
     server = _CallbackServer(("127.0.0.1", LOCAL_PORT), _CallbackHandler)
     server.timeout = 0.5
-    print(f"Opening browser for Google login... (listener on {LOCAL_REDIRECT})", file=sys.stderr)
-    webbrowser.open(auth_url)
+    print(f"Opening hosted login {_promem_login_url()} (listener on {LOCAL_REDIRECT})",
+          file=sys.stderr)
+    webbrowser.open(login_url)
 
     ticks = BROWSER_TIMEOUT * 2  # each handle_request waits up to 0.5s
-    while ticks > 0 and server.code is None and server.error is None:
+    while (
+        ticks > 0
+        and server.error is None
+        and server.access_token is None
+        and server.refresh_token is None
+        and server.code is None
+    ):
         server.handle_request()
         ticks -= 1
     server.server_close()
 
     if server.error:
         raise AuthError(f"Supabase returned error: {server.error}")
-    if not server.code:
+
+    if server.code and not server.refresh_token:
+        raise AuthError(
+            "Hosted login returned code but did not relay tokens to local callback. "
+            "Update https://promem.fly.dev/login token relay flow."
+        )
+
+    refresh_token = server.refresh_token
+    access_token = server.access_token
+    if not refresh_token:
         raise AuthError(f"Timed out waiting for browser callback after {BROWSER_TIMEOUT}s")
 
-    tokens = _exchange_pkce(server.code, verifier)
-    access_token = tokens.get("access_token")
-    refresh_token = tokens.get("refresh_token")
-    if not access_token or not refresh_token:
-        raise AuthError(f"Token response missing fields: keys={list(tokens.keys())}")
+    # If callback omitted access token, derive it from refresh once.
+    if not access_token:
+        tokens = _exchange_refresh(refresh_token)
+        access_token = tokens.get("access_token")
+        refresh_token = tokens.get("refresh_token") or refresh_token
+        if not access_token:
+            raise AuthError(f"Refresh response missing access_token: {tokens}")
 
     keyring.set_password(KEYRING_SERVICE, KEYRING_USER, refresh_token)
     return access_token
@@ -272,8 +293,7 @@ def logout() -> None:
 
 
 def whoami(token: Optional[str] = None) -> dict:
-    """Decode (without signature verification) the access_token's JWT
-    payload. For debugging — shows sub, email, expiry."""
+    """Decode (without signature verification) the access_token JWT payload."""
     if token is None:
         token = get_access_token()
     return jwt.decode(token, options={"verify_signature": False})
