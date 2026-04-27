@@ -49,6 +49,10 @@ class UploadResult(NamedTuple):
     duration_secs: float
 
 
+def _noninteractive_mode() -> bool:
+    return os.environ.get("PROMEM_AGENT_NONINTERACTIVE", "").strip().lower() in ("1", "true", "yes")
+
+
 def _base_url() -> str:
     return os.environ.get("PROMEM_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
 
@@ -89,9 +93,13 @@ def _post_one_batch(url: str, batch: list[dict], payload_key: str = "segments") 
 
         if r.status_code == 401 and not relogin_used:
             # Refresh path silently failed (token rotated/revoked). Force OAuth.
-            # NOTE: this opens a browser — Task Scheduler invocations should
-            # never hit this if the refresh path is healthy. 4b.4 will detect
-            # and surface a desktop notification before reaching here in prod.
+            # In non-interactive scheduled mode we never open browser OAuth
+            # here; surface a clear recoverable error instead.
+            if _noninteractive_mode():
+                raise UploadError(
+                    "401 from server and non-interactive mode is enabled; "
+                    "run `promem_agent init` interactively to refresh auth."
+                )
             print("warning: 401 from server, re-running OAuth login flow...", file=sys.stderr)
             token = oauth.first_run_login()
             relogin_used = True

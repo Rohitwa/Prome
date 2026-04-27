@@ -66,7 +66,15 @@ Section "Install" SecInstall
 
   payload_ok:
 
-  ; --- Step 2: Write hidden launchers (no cmd popups) --------------------
+  ; --- Step 2: Trigger one-time OAuth login -------------------------------
+  DetailPrint "Opening browser for one-time login (Google / Supabase)..."
+  ExecWait '"$INSTDIR\bin\promem_agent\promem_agent.exe" init' $0
+  ${If} $0 != 0
+    MessageBox MB_ICONSTOP|MB_OK "OAuth login did not complete (exit=$0).$\r$\n$\r$\nInstallation will now stop so background upload does not run unauthenticated.$\r$\n$\r$\nRe-run installer and complete login."
+    Abort
+  ${EndIf}
+
+  ; --- Step 3: Write hidden launchers (no cmd popups) --------------------
   DetailPrint "Writing hidden task launchers..."
 
   ; Agent task launcher (every 5 min, waits for completion).
@@ -75,6 +83,7 @@ Section "Install" SecInstall
   FileWrite $0 "shell.CurrentDirectory = $\"$INSTDIR$\"$\r$\n"
   FileWrite $0 "shell.Environment($\"PROCESS$\")($\"PROMEM_TRACKER_DB$\") = $\"$INSTDIR\tracker.db$\"$\r$\n"
   FileWrite $0 "shell.Environment($\"PROCESS$\")($\"PROMEM_AGENT_DISABLE_AUTO_UPDATE$\") = $\"true$\"$\r$\n"
+  FileWrite $0 "shell.Environment($\"PROCESS$\")($\"PROMEM_AGENT_NONINTERACTIVE$\") = $\"true$\"$\r$\n"
   FileWrite $0 "shell.Run Chr(34) & $\"$INSTDIR\bin\promem_agent\promem_agent.exe$\" & Chr(34) & $\" run$\", 0, True$\r$\n"
   FileClose $0
 
@@ -87,7 +96,7 @@ Section "Install" SecInstall
   FileWrite $0 "shell.Run Chr(34) & $\"$INSTDIR\bin\promem_tracker\promem_tracker.exe$\" & Chr(34), 0, False$\r$\n"
   FileClose $0
 
-  ; --- Step 3: Register scheduled tasks ----------------------------------
+  ; --- Step 4: Register scheduled tasks ----------------------------------
   DetailPrint "Registering '${TASK_AGENT}' scheduled task (every 5 min)..."
   nsExec::ExecToStack 'cmd /c schtasks /Create /TN "${TASK_AGENT}" /TR "\"$WINDIR\System32\wscript.exe\" //B \"$INSTDIR\run_agent_hidden.vbs\"" /SC MINUTE /MO 5 /F /RL LIMITED'
   Pop $0
@@ -102,16 +111,11 @@ Section "Install" SecInstall
     MessageBox MB_ICONEXCLAMATION|MB_OK "Failed to register ${TASK_TRACKER}.$\r$\n$\r$\nYou can register it manually from Command Prompt."
   ${EndIf}
 
-  ; --- Step 4: Trigger one-time OAuth login -------------------------------
-  DetailPrint "Opening browser for one-time login (Google / Supabase)..."
-  ExecWait '"$INSTDIR\bin\promem_agent\promem_agent.exe" init' $0
-  ${If} $0 != 0
-    MessageBox MB_ICONEXCLAMATION|MB_OK "OAuth login did not complete (exit=$0).$\r$\n$\r$\nYou can re-run later:$\r$\n  $INSTDIR\bin\promem_agent\promem_agent.exe init"
-  ${EndIf}
-
-  ; --- Step 5: Start tracker silently + open wiki -------------------------
+  ; --- Step 5: Start tracker + trigger first upload check -----------------
   DetailPrint "Starting tracker in background..."
   Exec '"$WINDIR\System32\wscript.exe" //B "$INSTDIR\run_tracker_hidden.vbs"'
+  DetailPrint "Triggering first upload check..."
+  Exec '"$WINDIR\System32\wscript.exe" //B "$INSTDIR\run_agent_hidden.vbs"'
   ExecShell "open" "https://promem.fly.dev/wiki"
 
   ; --- Uninstaller + Add/Remove Programs entry ---------------------------

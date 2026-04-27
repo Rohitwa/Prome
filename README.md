@@ -27,7 +27,7 @@ Installers are per-user (`%LOCALAPPDATA%\ProMem`) and do not require admin right
 2. Installer configures:
    - `ProMem Tracker` scheduled task (`ONLOGON`, hidden background run)
    - `ProMem Agent` scheduled task (every 5 minutes, hidden background run)
-3. Complete one-time browser login when prompted.
+3. Complete one-time browser login when prompted (required before background tasks are enabled).
 
 Check runtime health:
 

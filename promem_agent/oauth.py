@@ -61,6 +61,16 @@ class AuthError(Exception):
     """Auth flow failed (user closed browser, refresh token revoked, etc.)."""
 
 
+# ── Runtime mode helpers ────────────────────────────────────────────────
+def _noninteractive_mode() -> bool:
+    """True when the caller must never open browser-based OAuth flows.
+
+    Used by scheduled/background runs so auth failures are surfaced as
+    explicit errors instead of spawning interactive login unexpectedly.
+    """
+    return os.environ.get("PROMEM_AGENT_NONINTERACTIVE", "").strip().lower() in ("1", "true", "yes")
+
+
 # ── .env loader (mirrors db.py's loader so dev paths agree) ──────────────
 def _load_dotenv() -> None:
     env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -220,13 +230,29 @@ def first_run_login() -> str:
 
 def get_access_token() -> str:
     """Return a fresh access_token. Tries refresh first; falls back to OAuth
-    if no refresh_token is stored OR if refresh fails (revoked/expired)."""
-    refresh_token = keyring.get_password(KEYRING_SERVICE, KEYRING_USER)
+    if no refresh_token is stored OR if refresh fails (revoked/expired).
+
+    In non-interactive mode (PROMEM_AGENT_NONINTERACTIVE=true), browser login
+    fallback is disabled and AuthError is raised instead."""
+    noninteractive = _noninteractive_mode()
+
+    try:
+        refresh_token = keyring.get_password(KEYRING_SERVICE, KEYRING_USER)
+    except Exception as e:
+        raise AuthError(f"Keyring read failed: {e}") from e
+
     if not refresh_token:
+        if noninteractive:
+            raise AuthError("No refresh_token in keyring (run `promem_agent init` interactively).")
         return first_run_login()
     try:
         tokens = _exchange_refresh(refresh_token)
-    except AuthError:
+    except AuthError as e:
+        if noninteractive:
+            raise AuthError(
+                f"Refresh failed in non-interactive mode: {e}. "
+                "Run `promem_agent init` interactively."
+            ) from e
         return first_run_login()
     access_token = tokens.get("access_token")
     new_refresh = tokens.get("refresh_token")

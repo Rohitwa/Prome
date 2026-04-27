@@ -19,11 +19,12 @@ INSTALL
 1. Run:  promem_setup_<version>_x64.exe
 2. The installer will:
      - Extract bundled tracker + agent binaries
+     - Complete one-time Google login (required)
      - Register two hidden Task Scheduler jobs:
          "ProMem Tracker" -> at logon (background)
          "ProMem Agent"   -> every 5 min (background upload)
-     - Open browser once for Google login
      - Start tracker immediately
+     - Trigger first upload check immediately
      - Open https://promem.fly.dev/wiki
 
 No command prompt windows should pop up during normal background runs.
