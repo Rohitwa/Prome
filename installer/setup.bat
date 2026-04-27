@@ -132,6 +132,7 @@ REM Worker (no per-user OpenAI key needed).
     echo REM ProMem tracker runner - long-lived, started at logon.
     echo set OPENAI_USE_PROXY=true
     echo set PROMEM_TRACKER_DB=%TRACKER_DB%
+    echo set PYTHONPATH=%INSTALL_DIR%
     echo cd /d "%TRACKER_DIR%"
     echo "%INSTALL_DIR%\.venv\Scripts\python.exe" -m src.agent.tracker
     echo exit /b %%errorlevel%%
