@@ -240,12 +240,27 @@ def _cli_push(limit: int) -> int:
         return 0
     print(f"Uploading {len(segs)} segment(s)...")
     try:
-        result = upload_segments(segs)
+        seg_result = upload_segments(segs)
     except UploadError as e:
         print(f"UploadError (state NOT advanced): {e}", file=sys.stderr)
         return 1
+    _print_result("push segs  ", seg_result)
+
+    # Phase 4d: ship frames belonging to those segments before advancing state.
+    seg_ids = [s["target_segment_id"] for s in segs if s.get("target_segment_id")]
+    frames = w.fetch_frames_for_segments(seg_ids) if seg_ids else []
+    if frames:
+        print(f"Uploading {len(frames)} frame(s) for those segments...")
+        try:
+            frame_result = upload_frames(frames)
+        except UploadError as e:
+            print(f"UploadError on frames (state NOT advanced): {e}", file=sys.stderr)
+            return 1
+        _print_result("push frames", frame_result)
+    else:
+        print("(no frames found in context_2 for those segments)")
+
     w.mark_uploaded(segs)
-    _print_result("push", result)
     state = w.get_state()
     print(f"State advanced → last_uploaded_timestamp_start={state.get('last_uploaded_timestamp_start')}")
     return 0
