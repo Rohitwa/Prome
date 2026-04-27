@@ -29,7 +29,7 @@ echo ========================================================
 echo.
 
 REM --- Step 1: Detect Python ----------------------------------------------
-echo [1/10] Checking for Python on PATH...
+echo [1/11] Checking for Python on PATH...
 where python >nul 2>&1
 if errorlevel 1 (
     echo.
@@ -44,7 +44,7 @@ if errorlevel 1 (
 )
 
 REM --- Step 2: Verify version >= 3.10 ------------------------------------
-echo [2/10] Verifying Python version is 3.10 or newer...
+echo [2/11] Verifying Python version is 3.10 or newer...
 python -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)"
 if errorlevel 1 (
     echo.
@@ -58,11 +58,11 @@ if errorlevel 1 (
 for /f "delims=" %%v in ('python --version') do echo        Found: %%v
 
 REM --- Step 3: Create install dir ----------------------------------------
-echo [3/10] Creating install dir at %INSTALL_DIR% ...
+echo [3/11] Creating install dir at %INSTALL_DIR% ...
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
 REM --- Step 4: Copy agent + tracker source -------------------------------
-echo [4/10] Copying agent and tracker source...
+echo [4/11] Copying agent and tracker source...
 xcopy /E /I /Y /Q "%SRC_DIR%promem_agent" "%INSTALL_DIR%\promem_agent\" >nul
 if errorlevel 1 (
     echo ERROR: Could not copy promem_agent\ from %SRC_DIR%
@@ -79,7 +79,7 @@ copy /Y "%SRC_DIR%requirements-agent.txt" "%INSTALL_DIR%\" >nul
 if exist "%SRC_DIR%uninstall.bat" copy /Y "%SRC_DIR%uninstall.bat" "%INSTALL_DIR%\" >nul
 
 REM --- Step 5: Create venv -----------------------------------------------
-echo [5/10] Creating virtual environment at %INSTALL_DIR%\.venv ...
+echo [5/11] Creating virtual environment at %INSTALL_DIR%\.venv ...
 if exist "%INSTALL_DIR%\.venv" (
     echo        venv already exists; skipping create.
 ) else (
@@ -93,7 +93,7 @@ if exist "%INSTALL_DIR%\.venv" (
 )
 
 REM --- Step 6: Install agent dependencies --------------------------------
-echo [6/10] Installing agent dependencies (keyring, httpx, pyjwt)...
+echo [6/11] Installing agent dependencies (keyring, httpx, pyjwt)...
 "%INSTALL_DIR%\.venv\Scripts\pip.exe" install --quiet --disable-pip-version-check --upgrade -r "%INSTALL_DIR%\requirements-agent.txt"
 if errorlevel 1 (
     echo ERROR: pip install of agent dependencies failed. Check your internet connection.
@@ -102,9 +102,14 @@ if errorlevel 1 (
 )
 
 REM --- Step 7: Install productivity-tracker package (Promem-minimal) -----
-echo [7/10] Installing productivity-tracker package (Promem-minimal mode)...
+echo [7/11] Installing productivity-tracker package (Promem-minimal mode)...
 REM No `[pmis]` extras: chromadb stays out, PMIS subsystems gate to no-op.
-"%INSTALL_DIR%\.venv\Scripts\pip.exe" install --quiet --disable-pip-version-check "%TRACKER_DIR%"
+REM --force-reinstall --no-deps: refreshes the tracker package code without
+REM re-pulling its (large) dependency tree on every install. Required because
+REM productivity-tracker's version field is static at 0.1.0 and pip would
+REM otherwise skip reinstall when the same version is already in the venv,
+REM leaving stale code from a prior install.
+"%INSTALL_DIR%\.venv\Scripts\pip.exe" install --quiet --disable-pip-version-check --force-reinstall --no-deps "%TRACKER_DIR%"
 if errorlevel 1 (
     echo ERROR: pip install of productivity-tracker failed. Check your internet connection.
     pause
@@ -112,7 +117,7 @@ if errorlevel 1 (
 )
 
 REM --- Step 8: Write runner scripts and register scheduled tasks ---------
-echo [8/10] Writing runner scripts and registering 2 scheduled tasks...
+echo [8/11] Writing runner scripts and registering 2 scheduled tasks...
 
 REM agent runner: every 5 min upload of tracker.db -> cloud
 > "%INSTALL_DIR%\runner.bat" (
@@ -138,18 +143,40 @@ REM Worker (no per-user OpenAI key needed).
     echo exit /b %%errorlevel%%
 )
 
+set "TASK_FAILED="
 schtasks /Create /TN "%TASK_AGENT%" /TR "\"%INSTALL_DIR%\runner.bat\"" /SC MINUTE /MO 5 /F /RL LIMITED >nul
 if errorlevel 1 (
-    echo WARNING: Failed to register the agent scheduled task.
+    set "TASK_FAILED=1"
+    echo ERROR: Could not register the "ProMem Agent" task.
 )
 
 schtasks /Create /TN "%TASK_TRACKER%" /TR "\"%INSTALL_DIR%\tracker_runner.bat\"" /SC ONLOGON /F /RL LIMITED >nul
 if errorlevel 1 (
-    echo WARNING: Failed to register the tracker scheduled task.
+    set "TASK_FAILED=1"
+    echo ERROR: Could not register the "ProMem Tracker" task.
+)
+
+if defined TASK_FAILED (
+    echo.
+    echo ============================================================
+    echo  Scheduled task registration failed.
+    echo  This typically means setup.bat must be run as administrator
+    echo  on this Windows configuration.
+    echo.
+    echo  HOW TO FIX:
+    echo    1. Close this window.
+    echo    2. Right-click setup.bat -^> "Run as administrator".
+    echo    3. Click Yes on the User Account Control prompt.
+    echo.
+    echo  Without these tasks, ProMem will not capture or upload your
+    echo  productivity data after this window closes.
+    echo ============================================================
+    pause
+    exit /b 1
 )
 
 REM --- Step 9: Trigger one-time OAuth login ------------------------------
-echo [9/10] Opening browser for one-time login (Google / Supabase)...
+echo [9/11] Opening browser for one-time login (Google / Supabase)...
 "%INSTALL_DIR%\.venv\Scripts\python.exe" -m promem_agent init
 if errorlevel 1 (
     echo.
@@ -159,10 +186,37 @@ if errorlevel 1 (
 )
 
 REM --- Step 10: Start tracker now + open wiki dashboard ------------------
-echo [10/10] Starting tracker now and opening your wiki...
+echo [10/11] Starting tracker now and opening your wiki...
 REM Spawn tracker_runner.bat in a new window so this script can finish.
 start "ProMem Tracker" /B cmd /c "%INSTALL_DIR%\tracker_runner.bat"
 start "" "https://promem.fly.dev/wiki"
+
+REM --- Step 11: Verify ingest end-to-end (wait + force agent run) --------
+echo [11/11] Waiting 60s for tracker to capture a first segment, then forcing an upload...
+REM Tracker needs ~30-60s to capture screenshots, finalize a segment via SSIM,
+REM classify it via the Worker, and write it to context_1. We then run the
+REM agent once explicitly (same code path the schtask fires every 5 min) so
+REM the user sees data in the dashboard immediately rather than waiting for
+REM the next scheduled run.
+timeout /t 60 /nobreak >nul
+"%INSTALL_DIR%\.venv\Scripts\python.exe" -m promem_agent --verbose run
+if errorlevel 1 (
+    echo.
+    echo ============================================================
+    echo  Tracker is running but the first agent upload failed.
+    echo  Open the log to see why:
+    echo    notepad "%INSTALL_DIR%\agent.log"
+    echo  The agent will retry every 5 minutes regardless. Dashboard:
+    echo    https://promem.fly.dev/productivity
+    echo ============================================================
+) else (
+    echo.
+    echo ============================================================
+    echo  ProMem is live. Your dashboard:
+    echo    https://promem.fly.dev/productivity
+    echo  Refresh in 1-2 minutes to see your first segment.
+    echo ============================================================
+)
 
 echo.
 echo ========================================================
