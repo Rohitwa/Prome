@@ -28,34 +28,81 @@ echo   ProMem installer (tracker + cloud agent)
 echo ========================================================
 echo.
 
-REM --- Step 1: Detect Python ----------------------------------------------
-echo [1/11] Checking for Python on PATH...
-where python >nul 2>&1
-if errorlevel 1 (
+REM --- Step 1: Locate Python (admin-context-safe) ------------------------
+REM Under "Run as administrator" on machines where Python was installed
+REM with "Just me" + "Add to PATH", the elevated session may not see the
+REM user's PATH and `where python` fails. Fall through several known
+REM locations so admin-mode installs never falsely report missing Python.
+echo [1/11] Locating Python 3.10+...
+
+set "PYTHON_EXE="
+
+REM 1. Python launcher (system-wide, most reliable under admin)
+where py >nul 2>&1
+if not errorlevel 1 (
+    for /f "delims=" %%p in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do (
+        if not defined PYTHON_EXE set "PYTHON_EXE=%%p"
+    )
+)
+
+REM 2. python on PATH
+if not defined PYTHON_EXE (
+    where python >nul 2>&1
+    if not errorlevel 1 (
+        for /f "delims=" %%p in ('where python') do (
+            if not defined PYTHON_EXE set "PYTHON_EXE=%%p"
+        )
+    )
+)
+
+REM 3. Standard install dirs (user install, "Just me")
+if not defined PYTHON_EXE (
+    for %%v in (313 312 311 310) do (
+        if not defined PYTHON_EXE if exist "%LOCALAPPDATA%\Programs\Python\Python%%v\python.exe" (
+            set "PYTHON_EXE=%LOCALAPPDATA%\Programs\Python\Python%%v\python.exe"
+        )
+    )
+)
+
+REM 4. Standard install dirs (all-users install)
+if not defined PYTHON_EXE (
+    for %%v in (313 312 311 310) do (
+        if not defined PYTHON_EXE if exist "C:\Program Files\Python%%v\python.exe" (
+            set "PYTHON_EXE=C:\Program Files\Python%%v\python.exe"
+        )
+    )
+)
+
+if not defined PYTHON_EXE (
     echo.
-    echo ERROR: Python is not installed or not on PATH.
+    echo ERROR: Python 3.10+ not found.
     echo.
-    echo Install Python 3.10+ from:  https://www.python.org/downloads/
-    echo IMPORTANT: Check 'Add Python to PATH' on the first install screen.
+    echo Install Python 3.12 from:  https://www.python.org/downloads/
+    echo IMPORTANT: Check both:
+    echo   * "Add Python to PATH"
+    echo   * "Install for all users"   ^(avoids PATH issues under admin^)
     echo.
     start "" "https://www.python.org/downloads/"
     pause
     exit /b 1
 )
 
+echo        Using: !PYTHON_EXE!
+
 REM --- Step 2: Verify version >= 3.10 ------------------------------------
 echo [2/11] Verifying Python version is 3.10 or newer...
-python -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)"
+"!PYTHON_EXE!" -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)"
 if errorlevel 1 (
     echo.
-    echo ERROR: Python 3.10 or newer is required.
+    echo ERROR: Python at !PYTHON_EXE! is too old. Need 3.10+.
+    "!PYTHON_EXE!" -c "import sys; print('Found:', sys.version)"
     echo Upgrade from:  https://www.python.org/downloads/
     echo.
     start "" "https://www.python.org/downloads/"
     pause
     exit /b 1
 )
-for /f "delims=" %%v in ('python --version') do echo        Found: %%v
+for /f "delims=" %%v in ('"!PYTHON_EXE!" --version') do echo        Version: %%v
 
 REM --- Step 3: Create install dir ----------------------------------------
 echo [3/11] Creating install dir at %INSTALL_DIR% ...
@@ -83,7 +130,7 @@ echo [5/11] Creating virtual environment at %INSTALL_DIR%\.venv ...
 if exist "%INSTALL_DIR%\.venv" (
     echo        venv already exists; skipping create.
 ) else (
-    python -m venv "%INSTALL_DIR%\.venv"
+    "!PYTHON_EXE!" -m venv "%INSTALL_DIR%\.venv"
     if errorlevel 1 (
         echo ERROR: Failed to create venv. Python's venv module may be missing.
         echo        Try reinstalling Python from python.org.
@@ -116,20 +163,30 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM --- Step 8: Write runner scripts and register scheduled tasks ---------
-echo [8/11] Writing runner scripts and registering 2 scheduled tasks...
+REM --- Step 8: Write runner scripts and register startup mechanism --------
+echo [8/11] Writing runner scripts and registering startup mechanism...
 
-REM agent runner: every 5 min upload of tracker.db -> cloud
+REM agent runner: single-shot upload (called by schtasks every 5 min, OR by agent_loop.bat).
 > "%INSTALL_DIR%\runner.bat" (
     echo @echo off
-    echo REM ProMem agent runner - invoked by Task Scheduler every 5 min.
+    echo REM ProMem agent runner - one upload of tracker.db -^> cloud.
     echo set PROMEM_TRACKER_DB=%TRACKER_DB%
     echo cd /d "%INSTALL_DIR%"
     echo "%INSTALL_DIR%\.venv\Scripts\python.exe" -m promem_agent run
     echo exit /b %%errorlevel%%
 )
 
-REM tracker runner: long-lived, captures screenshots and writes context_1/2.
+REM agent loop: HKCU\Run fallback when schtasks denied. Calls runner.bat every 5 min.
+> "%INSTALL_DIR%\agent_loop.bat" (
+    echo @echo off
+    echo REM ProMem agent loop - HKCU\Run fallback ^(used when schtasks denied^).
+    echo :loop
+    echo call "%INSTALL_DIR%\runner.bat" ^>nul 2^>^&1
+    echo timeout /t 300 /nobreak ^>nul
+    echo goto :loop
+)
+
+REM tracker runner: long-lived, started at logon (schtask or HKCU\Run).
 REM OPENAI_USE_PROXY=true routes OpenAI calls through the Promem Cloudflare
 REM Worker (no per-user OpenAI key needed).
 > "%INSTALL_DIR%\tracker_runner.bat" (
@@ -143,36 +200,30 @@ REM Worker (no per-user OpenAI key needed).
     echo exit /b %%errorlevel%%
 )
 
-set "TASK_FAILED="
-schtasks /Create /TN "%TASK_AGENT%" /TR "\"%INSTALL_DIR%\runner.bat\"" /SC MINUTE /MO 5 /F /RL LIMITED >nul
+REM Try schtasks for agent (every 5 min). On failure (locked-down policies),
+REM fall back to HKCU\Run with a self-looping bat. Both paths are non-admin
+REM in their respective Windows configs, so the install never blocks here.
+schtasks /Create /TN "%TASK_AGENT%" /TR "\"%INSTALL_DIR%\runner.bat\"" /SC MINUTE /MO 5 /F /RL LIMITED >nul 2>&1
 if errorlevel 1 (
-    set "TASK_FAILED=1"
-    echo ERROR: Could not register the "ProMem Agent" task.
+    echo        Agent: schtasks denied -^> using HKCU\Run fallback
+    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "ProMem Agent" /t REG_SZ /d "cmd /c start \"\" /min \"%INSTALL_DIR%\agent_loop.bat\"" /f >nul
+    REM HKCU\Run fires only at next logon — kick the loop now so the agent runs this session too.
+    start "ProMem Agent" /B /MIN cmd /c "%INSTALL_DIR%\agent_loop.bat"
+) else (
+    echo        Agent: scheduled task registered ^(every 5 min^)
+    REM Also clean any stale HKCU\Run entry from a prior fallback install.
+    reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "ProMem Agent" /f >nul 2>&1
 )
 
-schtasks /Create /TN "%TASK_TRACKER%" /TR "\"%INSTALL_DIR%\tracker_runner.bat\"" /SC ONLOGON /F /RL LIMITED >nul
+REM Try schtasks for tracker (at logon). On failure, fall back to HKCU\Run.
+schtasks /Create /TN "%TASK_TRACKER%" /TR "\"%INSTALL_DIR%\tracker_runner.bat\"" /SC ONLOGON /F /RL LIMITED >nul 2>&1
 if errorlevel 1 (
-    set "TASK_FAILED=1"
-    echo ERROR: Could not register the "ProMem Tracker" task.
-)
-
-if defined TASK_FAILED (
-    echo.
-    echo ============================================================
-    echo  Scheduled task registration failed.
-    echo  This typically means setup.bat must be run as administrator
-    echo  on this Windows configuration.
-    echo.
-    echo  HOW TO FIX:
-    echo    1. Close this window.
-    echo    2. Right-click setup.bat -^> "Run as administrator".
-    echo    3. Click Yes on the User Account Control prompt.
-    echo.
-    echo  Without these tasks, ProMem will not capture or upload your
-    echo  productivity data after this window closes.
-    echo ============================================================
-    pause
-    exit /b 1
+    echo        Tracker: schtasks denied -^> using HKCU\Run fallback
+    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "ProMem Tracker" /t REG_SZ /d "cmd /c start \"\" /min \"%INSTALL_DIR%\tracker_runner.bat\"" /f >nul
+    REM Tracker is started inline by step 10, so HKCU\Run handles future logons only.
+) else (
+    echo        Tracker: scheduled task registered ^(at logon^)
+    reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "ProMem Tracker" /f >nul 2>&1
 )
 
 REM --- Step 9: Trigger one-time OAuth login ------------------------------

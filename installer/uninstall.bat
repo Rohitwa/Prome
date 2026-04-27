@@ -16,10 +16,13 @@ echo.
 echo Uninstalling ProMem...
 echo.
 
-REM --- Step 1: Remove scheduled tasks ------------------------------------
-echo [1/2] Removing scheduled tasks (agent + tracker)...
+REM --- Step 1: Remove scheduled tasks + HKCU\Run entries -----------------
+echo [1/2] Removing scheduled tasks and HKCU\Run entries (agent + tracker)...
 schtasks /Delete /TN "%TASK_AGENT%" /F >nul 2>&1
 schtasks /Delete /TN "%TASK_TRACKER%" /F >nul 2>&1
+REM Also clean HKCU\Run fallback entries (used when schtasks was denied at install).
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "ProMem Agent" /f >nul 2>&1
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "ProMem Tracker" /f >nul 2>&1
 REM Best-effort: kill any running tracker process so the install dir can be removed.
 taskkill /F /IM python.exe /FI "WINDOWTITLE eq ProMem Tracker*" >nul 2>&1
 
