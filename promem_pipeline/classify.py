@@ -31,10 +31,8 @@ LLM_MAX_RETRIES = 2
 
 def _llm_json(prompt: str) -> dict:
     """Call gpt-4o-mini with response_format=json_object. Returns parsed dict or {}."""
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("OPENAI_API_KEY not set")
-    base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    from ._openai_client import credentials   # proxy/direct dispatch
+    key, base = credentials()
     last_err = ""
     for attempt in range(LLM_MAX_RETRIES + 1):
         try:

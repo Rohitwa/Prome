@@ -36,10 +36,8 @@ CONCURRENCY = 4
 
 
 def _llm_json(prompt: str, max_tokens: int = 1800) -> dict:
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("OPENAI_API_KEY not set")
-    base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    from ._openai_client import credentials   # proxy/direct dispatch
+    key, base = credentials()
     last_err = ""
     for attempt in range(RETRIES + 1):
         try:
