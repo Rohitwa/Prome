@@ -21,7 +21,8 @@ APIs (JSON):
   POST /api/deliverables/<id>/match/<page_id>/unpin
   POST /api/orchestrator/run                        — disabled in cloud (Phase 4+)
   GET  /api/orchestrator/status                     — disabled in cloud (Phase 4+)
-  POST /api/upload-segments                         {segments: [...]} (Phase 4a)
+  POST /api/upload-segments                         {segments: [...]} (Phase 4a; extended Phase 4d)
+  POST /api/upload-frames                           {frames: [...]} (Phase 4d)
   GET  /agent/manifest                              auto-update manifest (Phase 4b.7, public)
   GET  /agent/dist/{filename}                       agent zip download (Phase 4b.7, public)
 
@@ -754,6 +755,7 @@ class FeedbackIn(BaseModel):
 
 
 class TrackerSegmentIn(BaseModel):
+    # Phase 4a — original 10 columns sync.py reads.
     id: str
     target_segment_id: Optional[str] = None
     timestamp_start: str
@@ -764,10 +766,37 @@ class TrackerSegmentIn(BaseModel):
     detailed_summary: Optional[str] = None
     supercontext: Optional[str] = None
     context: Optional[str] = None
+    # Phase 4d — additional context_1 columns the /productivity dashboard
+    # reads. All optional so v0.1.x agents (which don't send these) keep
+    # working; missing fields persist as NULL / column defaults.
+    worker: Optional[str] = None
+    is_productive: Optional[int] = -1
+    human_frame_count: Optional[int] = 0
+    ai_frame_count: Optional[int] = 0
+    platform: Optional[str] = None
+    medium: Optional[str] = None
+    full_text: Optional[str] = None
+    anchor: Optional[str] = None
 
 
 class UploadSegmentsIn(BaseModel):
     segments: list[TrackerSegmentIn]
+
+
+class TrackerFrameIn(BaseModel):
+    id: str
+    target_segment_id: str
+    target_frame_number: Optional[int] = None
+    frame_timestamp: Optional[str] = None
+    raw_text: Optional[str] = None
+    detailed_summary: Optional[str] = None
+    worker_type: Optional[str] = None
+    has_keyboard_activity: bool = False
+    has_mouse_activity: bool = False
+
+
+class UploadFramesIn(BaseModel):
+    frames: list[TrackerFrameIn]
 
 
 @app.post("/api/projects")
@@ -884,7 +913,10 @@ def api_upload_segments(
     rows = [
         (user_id, s.id, s.target_segment_id, s.timestamp_start, s.timestamp_end,
          s.target_segment_length_secs, s.short_title, s.window_name,
-         s.detailed_summary, s.supercontext, s.context)
+         s.detailed_summary, s.supercontext, s.context,
+         # Phase 4d additions:
+         s.worker, s.is_productive, s.human_frame_count, s.ai_frame_count,
+         s.platform, s.medium, s.full_text, s.anchor)
         for s in payload.segments
     ]
     with db.conn() as c:
@@ -893,8 +925,52 @@ def api_upload_segments(
             "INSERT INTO tracker_segments "
             "(user_id, id, target_segment_id, timestamp_start, timestamp_end, "
             " target_segment_length_secs, short_title, window_name, "
-            " detailed_summary, supercontext, context) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            " detailed_summary, supercontext, context, "
+            " worker, is_productive, human_frame_count, ai_frame_count, "
+            " platform, medium, full_text, anchor) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+            "        %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (user_id, id) DO NOTHING",
+            rows,
+        )
+        n_inserted = cur.rowcount
+    return {"ok": True, "n_received": n_received, "n_inserted": n_inserted}
+
+
+# Per-request cap for frames. Frames are ~6 per segment, ~10x more numerous
+# than segments. 5000 means an agent uploading 1000 segments worth (~6000
+# frames) sends just two requests.
+UPLOAD_FRAMES_MAX = 5000
+
+
+@app.post("/api/upload-frames")
+def api_upload_frames(
+    payload: UploadFramesIn,
+    user_id: str = Depends(get_current_user),
+) -> dict:
+    n_received = len(payload.frames)
+    if n_received == 0:
+        return {"ok": True, "n_received": 0, "n_inserted": 0}
+    if n_received > UPLOAD_FRAMES_MAX:
+        raise HTTPException(
+            status_code=413,
+            detail=f"max {UPLOAD_FRAMES_MAX} frames per request "
+                   f"(received {n_received}); chunk client-side",
+        )
+    rows = [
+        (user_id, f.id, f.target_segment_id, f.target_frame_number,
+         f.frame_timestamp, f.raw_text, f.detailed_summary, f.worker_type,
+         f.has_keyboard_activity, f.has_mouse_activity)
+        for f in payload.frames
+    ]
+    with db.conn() as c:
+        cur = c.cursor()
+        cur.executemany(
+            "INSERT INTO tracker_frames "
+            "(user_id, id, target_segment_id, target_frame_number, "
+            " frame_timestamp, raw_text, detailed_summary, worker_type, "
+            " has_keyboard_activity, has_mouse_activity) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (user_id, id) DO NOTHING",
             rows,
         )
