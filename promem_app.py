@@ -427,6 +427,119 @@ def projects_new(request: Request, user_id: str = Depends(get_current_user)) -> 
     return TEMPLATES.TemplateResponse(request, "promem_project_new.html", {})
 
 
+def _cloud_productivity_data(c, user_id: str, sel_date: str, sel_dt) -> dict:
+    """Compute productivity widgets from tracker_segments (cloud Postgres).
+    Used when local tracker.db is not present (i.e., on Fly). Some fields
+    that only the local Mac tracker captures (is_productive flag, worker
+    classification, per-frame keyboard/mouse activity) are not yet uploaded
+    to cloud and surface as 0 / placeholders."""
+    from datetime import timedelta as _td2, datetime as _dt2
+
+    # Stats — total time + segment count for the selected day
+    stats_row = c.execute("""
+        SELECT COALESCE(SUM(target_segment_length_secs), 0) AS total_secs,
+               COUNT(*) AS n_segments
+        FROM tracker_segments
+        WHERE user_id = %s AND substring(timestamp_start, 1, 10) = %s
+    """, (user_id, sel_date)).fetchone()
+    total_min = round((stats_row["total_secs"] or 0) / 60)
+    stats = {
+        "total_min":   total_min,
+        "prod_min":    total_min,    # cloud lacks is_productive flag yet
+        "human_min":   0,            # cloud lacks worker classification yet
+        "ai_min":      0,
+        "human_frames": 0,           # cloud lacks per-frame data (context_2)
+        "ai_frames":   0,
+        "n_segments":  stats_row["n_segments"] or 0,
+    }
+
+    # 30-day coverage heatmap
+    coverage = []
+    for i in range(29, -1, -1):
+        d = (sel_dt - _td2(days=i)).strftime("%Y-%m-%d")
+        row = c.execute(
+            "SELECT COALESCE(SUM(target_segment_length_secs), 0) AS s "
+            "FROM tracker_segments WHERE user_id=%s AND substring(timestamp_start, 1, 10)=%s",
+            (user_id, d),
+        ).fetchone()
+        secs = row["s"] or 0
+        level = (
+            0 if secs == 0
+            else 1 if secs < 1800
+            else 2 if secs < 5400
+            else 3 if secs < 14400
+            else 4
+        )
+        coverage.append({"date": d, "level": level, "min": round(secs / 60)})
+
+    # 7-day weekly bars
+    weekly = []
+    for i in range(6, -1, -1):
+        d = (sel_dt - _td2(days=i)).strftime("%Y-%m-%d")
+        row = c.execute(
+            "SELECT COALESCE(SUM(target_segment_length_secs), 0) AS s "
+            "FROM tracker_segments WHERE user_id=%s AND substring(timestamp_start, 1, 10)=%s",
+            (user_id, d),
+        ).fetchone()
+        weekly.append({
+            "date": d,
+            "label": _dt2.strptime(d, "%Y-%m-%d").strftime("%a"),
+            "min": round((row["s"] or 0) / 60),
+            "is_sel": (d == sel_date),
+        })
+
+    # Top apps by time today
+    by_app = [
+        {"app": (r["app"] or "—")[:60], "secs": int(r["secs"] or 0)}
+        for r in c.execute("""
+            SELECT COALESCE(NULLIF(window_name, ''), '—') AS app,
+                   SUM(target_segment_length_secs) AS secs
+            FROM tracker_segments
+            WHERE user_id = %s AND substring(timestamp_start, 1, 10) = %s
+            GROUP BY app
+            ORDER BY secs DESC NULLS LAST
+            LIMIT 12
+        """, (user_id, sel_date)).fetchall()
+    ]
+
+    # Hourly distribution (in minutes per hour)
+    hour_counts = [0] * 24
+    for r in c.execute("""
+        SELECT CAST(substring(timestamp_start, 12, 2) AS INTEGER) AS hr,
+               SUM(target_segment_length_secs) AS secs
+        FROM tracker_segments
+        WHERE user_id = %s AND substring(timestamp_start, 1, 10) = %s
+        GROUP BY hr
+    """, (user_id, sel_date)).fetchall():
+        hr = r["hr"] if r["hr"] is not None else 0
+        if 0 <= hr < 24:
+            hour_counts[hr] = int((r["secs"] or 0) // 60)
+
+    # Recent segments (most recent 12 today)
+    recent = [
+        {"time": (r["timestamp_start"] or "")[11:16],
+         "title": r["short_title"] or r["window_name"] or "—",
+         "worker": "—"}
+        for r in c.execute("""
+            SELECT timestamp_start, short_title, window_name
+            FROM tracker_segments
+            WHERE user_id = %s AND substring(timestamp_start, 1, 10) = %s
+            ORDER BY timestamp_start DESC
+            LIMIT 12
+        """, (user_id, sel_date)).fetchall()
+    ]
+
+    return {
+        "stats":       stats,
+        "coverage":    coverage,
+        "weekly":      weekly,
+        "by_app":      by_app,
+        "hour_counts": hour_counts,
+        "input_act":   {"frames": 0, "kb": 0, "mouse": 0},  # not yet on cloud
+        "recent":      recent,
+    }
+
+
 @app.get("/productivity", response_class=HTMLResponse)
 def productivity(
     request: Request,
@@ -434,26 +547,6 @@ def productivity(
     user_id: str = Depends(get_current_user),
 ) -> HTMLResponse:
     from datetime import date as _d, timedelta as _td, datetime as _dt
-    if not TRACKER.exists():
-        return HTMLResponse(
-            f"""<!doctype html><html><head><title>productivity — ProMem</title>
-<style>body{{font-family:-apple-system,Segoe UI,system-ui,sans-serif;
-max-width:640px;margin:60px auto;padding:24px;color:#1a1a1a;background:#f7f7f8;}}
-h1{{margin-top:0;}} code{{background:#eef0f3;padding:2px 6px;border-radius:4px;
-font-family:ui-monospace,monospace;font-size:13px;}}
-.note{{background:#fff;border:1px solid #e2e4e8;border-left:3px solid #ea580c;
-padding:12px 16px;border-radius:8px;margin-top:16px;}}
-a{{color:#2563eb;text-decoration:none;}}</style></head><body>
-<h1>productivity</h1>
-<p>Tracker database not connected.</p>
-<div class="note">ProMem couldn't find <code>tracker.db</code> at <code>{TRACKER}</code>.
-Set <code>PROMEM_TRACKER_DB</code> to point at a productivity-tracker SQLite file,
-or mount one to that path. Cloud sync of tracker data is a Phase 4 deliverable.</div>
-<p style="margin-top:24px"><a href="/wiki">← memory wiki</a> &nbsp;
-<a href="/projects">projects →</a></p>
-</body></html>""",
-            status_code=200,
-        )
     sel_date = (date or _d.today().strftime("%Y-%m-%d")).strip()
     try:
         sel_dt = _dt.strptime(sel_date, "%Y-%m-%d").date()
@@ -461,6 +554,44 @@ or mount one to that path. Cloud sync of tracker data is a Phase 4 deliverable.<
         sel_dt = _d.today()
         sel_date = sel_dt.strftime("%Y-%m-%d")
 
+    # Cloud path: no local tracker.db → read from Postgres tracker_segments
+    if not TRACKER.exists():
+        with db.conn() as c:
+            d = _cloud_productivity_data(c, user_id, sel_date, sel_dt)
+            by_project = [dict(r) for r in c.execute("""
+                SELECT p.id, p.name,
+                       COUNT(DISTINCT wp.id) AS pages,
+                       ROUND(SUM(wp.total_minutes)::numeric, 1) AS mins
+                FROM projects p
+                JOIN deliverables d ON d.project_id = p.id AND d.user_id = p.user_id
+                JOIN deliverable_match dm ON dm.deliverable_id = d.id AND dm.user_id = d.user_id
+                JOIN work_pages wp ON wp.id = dm.page_id AND wp.user_id = dm.user_id
+                WHERE p.user_id=%s AND wp.date_local = %s
+                GROUP BY p.id, p.name
+                ORDER BY mins DESC
+            """, (user_id, sel_date)).fetchall()]
+            top_ctx = [dict(r) for r in c.execute("""
+                SELECT ctx_label, COUNT(*) AS n
+                FROM work_pages
+                WHERE user_id=%s AND date_local = %s AND ctx_label != ''
+                GROUP BY ctx_label ORDER BY n DESC LIMIT 8
+            """, (user_id, sel_date)).fetchall()]
+        return TEMPLATES.TemplateResponse(request, "promem_productivity.html", {
+            "sel_date":    sel_date,
+            "stats":       d["stats"],
+            "coverage":    d["coverage"],
+            "weekly":      d["weekly"],
+            "max_weekly":  max((w["min"] for w in d["weekly"]), default=0) or 1,
+            "by_app":      d["by_app"],
+            "by_project":  by_project,
+            "hour_counts": d["hour_counts"],
+            "max_hour":    max(d["hour_counts"]) or 1,
+            "input_act":   d["input_act"],
+            "recent":      d["recent"],
+            "top_ctx":     top_ctx,
+        })
+
+    # Local path (Mac dev): read from local tracker.db (rich data with worker, frames, etc.)
     tconn = _tracker_conn()
     stats_row = tconn.execute("""
         SELECT
