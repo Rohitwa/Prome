@@ -28,12 +28,14 @@ import httpx
 from promem_agent import oauth
 
 
-DEFAULT_BASE_URL = "https://promem.fly.dev"
-UPLOAD_PATH      = "/api/upload-segments"
-MAX_BATCH        = 1000     # mirrors server's UPLOAD_SEGMENTS_MAX
-RETRY_MAX        = 3        # for 5xx / 429 / network errors
-RETRY_BACKOFF    = 2.0      # seconds, multiplied by 2**attempt
-HTTP_TIMEOUT     = 30.0     # per-request
+DEFAULT_BASE_URL    = "https://promem.fly.dev"
+UPLOAD_PATH         = "/api/upload-segments"
+UPLOAD_FRAMES_PATH  = "/api/upload-frames"
+MAX_BATCH           = 1000     # mirrors server's UPLOAD_SEGMENTS_MAX
+MAX_FRAMES_BATCH    = 5000     # mirrors server's UPLOAD_FRAMES_MAX (smaller payloads)
+RETRY_MAX           = 3        # for 5xx / 429 / network errors
+RETRY_BACKOFF       = 2.0      # seconds, multiplied by 2**attempt
+HTTP_TIMEOUT        = 30.0     # per-request
 
 
 class UploadError(Exception):
@@ -56,9 +58,12 @@ def _chunks(items: list, size: int):
         yield items[i : i + size]
 
 
-def _post_one_batch(url: str, batch: list[dict]) -> dict:
+def _post_one_batch(url: str, batch: list[dict], payload_key: str = "segments") -> dict:
     """POST a single batch with retry/auth handling. Returns the parsed
-    response body on success. Raises UploadError on unrecoverable failure."""
+    response body on success. Raises UploadError on unrecoverable failure.
+
+    payload_key controls the JSON wrapper key — "segments" for /api/upload-segments,
+    "frames" for /api/upload-frames."""
     token = oauth.get_access_token()
     relogin_used = False
     attempt = 0
@@ -67,7 +72,7 @@ def _post_one_batch(url: str, batch: list[dict]) -> dict:
             r = httpx.post(
                 url,
                 headers={"Authorization": f"Bearer {token}"},
-                json={"segments": batch},
+                json={payload_key: batch},
                 timeout=HTTP_TIMEOUT,
             )
         except httpx.RequestError as e:
@@ -132,7 +137,26 @@ def upload_segments(segments: list[dict], base_url: str | None = None) -> Upload
     total_inserted = 0
     n_batches = 0
     for batch in _chunks(segments, MAX_BATCH):
-        body = _post_one_batch(url, batch)
+        body = _post_one_batch(url, batch, payload_key="segments")
+        total_received += int(body.get("n_received", 0))
+        total_inserted += int(body.get("n_inserted", 0))
+        n_batches += 1
+    duration = time.monotonic() - started
+    return UploadResult(total_received, total_inserted, n_batches, duration)
+
+
+def upload_frames(frames: list[dict], base_url: str | None = None) -> UploadResult:
+    """Chunk frames into <=MAX_FRAMES_BATCH and POST each to /api/upload-frames.
+    Same retry/auth/idempotency model as upload_segments."""
+    if not frames:
+        return UploadResult(0, 0, 0, 0.0)
+    url = f"{(base_url or _base_url()).rstrip('/')}{UPLOAD_FRAMES_PATH}"
+    started = time.monotonic()
+    total_received = 0
+    total_inserted = 0
+    n_batches = 0
+    for batch in _chunks(frames, MAX_FRAMES_BATCH):
+        body = _post_one_batch(url, batch, payload_key="frames")
         total_received += int(body.get("n_received", 0))
         total_inserted += int(body.get("n_inserted", 0))
         n_batches += 1
@@ -152,6 +176,28 @@ SMOKE_SEGMENT = {
     "detailed_summary": "synthetic segment to verify uploader CLI end-to-end",
     "supercontext": None,
     "context": None,
+    # Phase 4d optional fields — sent as placeholders so the smoke also
+    # exercises the extended INSERT path on the server.
+    "worker": "human",
+    "is_productive": 1,
+    "human_frame_count": 1,
+    "ai_frame_count": 0,
+    "platform": "smoke-test",
+    "medium": None,
+    "full_text": None,
+    "anchor": None,
+}
+
+SMOKE_FRAME = {
+    "id": "agent-smoke-frame-001",
+    "target_segment_id": "AGENT-SMOKE",
+    "target_frame_number": 1,
+    "frame_timestamp": "2026-04-26T08:00:30",
+    "raw_text": "smoke-test frame raw text",
+    "detailed_summary": "smoke-test frame summary",
+    "worker_type": "human",
+    "has_keyboard_activity": True,
+    "has_mouse_activity": False,
 }
 
 
@@ -164,15 +210,22 @@ def _print_result(label: str, result: UploadResult) -> None:
 
 def _cli_test() -> int:
     try:
-        result = upload_segments([SMOKE_SEGMENT])
+        seg_result = upload_segments([SMOKE_SEGMENT])
     except UploadError as e:
-        print(f"UploadError: {e}", file=sys.stderr)
+        print(f"UploadError (segments): {e}", file=sys.stderr)
         return 1
-    _print_result("smoke", result)
+    _print_result("smoke segments", seg_result)
+    try:
+        frame_result = upload_frames([SMOKE_FRAME])
+    except UploadError as e:
+        print(f"UploadError (frames): {e}", file=sys.stderr)
+        return 1
+    _print_result("smoke frames  ", frame_result)
     print(
-        "(stable id 'agent-smoke-001' — re-run to verify idempotency: "
-        "n_inserted should drop to 0. To clean up:\n"
+        "(stable ids 'agent-smoke-001' / 'agent-smoke-frame-001' — re-run to "
+        "verify idempotency: n_inserted drops to 0. To clean up:\n"
         "  DELETE FROM tracker_segments WHERE id = 'agent-smoke-001';\n"
+        "  DELETE FROM tracker_frames   WHERE id = 'agent-smoke-frame-001';\n"
         " in Supabase SQL Editor.)"
     )
     return 0

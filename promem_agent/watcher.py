@@ -31,19 +31,28 @@ from promem_agent.oauth import _load_dotenv  # noqa: F401  (side-effect on impor
 
 SCHEMA_VERSION = 1
 DEFAULT_BACKFILL_DAYS = 30
-SQL_FETCH = """
-    SELECT id, target_segment_id, timestamp_start, timestamp_end,
-           target_segment_length_secs, short_title, window_name,
-           detailed_summary, supercontext, context
-    FROM context_1
-    WHERE timestamp_start > ?
-    ORDER BY timestamp_start
-    LIMIT ?
-"""
-COLUMNS = [
+
+# context_1 columns the agent uploads. Phase 4a was the first 10 only;
+# Phase 4d added the next 8 to match the /productivity dashboard's needs.
+# Older tracker.db schemas may not have all 18 — _resolve_segment_columns()
+# checks the live schema at runtime and includes only what's present.
+SEGMENT_COLUMNS_PHASE_4A = [
     "id", "target_segment_id", "timestamp_start", "timestamp_end",
     "target_segment_length_secs", "short_title", "window_name",
     "detailed_summary", "supercontext", "context",
+]
+SEGMENT_COLUMNS_PHASE_4D = [
+    "worker", "is_productive", "human_frame_count", "ai_frame_count",
+    "platform", "medium", "full_text", "anchor",
+]
+ALL_SEGMENT_COLUMNS = SEGMENT_COLUMNS_PHASE_4A + SEGMENT_COLUMNS_PHASE_4D
+
+# context_2 (per-frame) columns the agent uploads. Mirrors the
+# tracker_frames cloud schema (Phase 4d migration 0004).
+FRAME_COLUMNS = [
+    "id", "target_segment_id", "target_frame_number", "frame_timestamp",
+    "raw_text", "detailed_summary", "worker_type",
+    "has_keyboard_activity", "has_mouse_activity",
 ]
 
 
@@ -159,9 +168,18 @@ class TrackerWatcher:
         return (datetime.now() - timedelta(days=self.backfill_days)).isoformat(sep=" ")
 
     # ── Read ─────────────────────────────────────────────────────────────
+    def _resolve_columns(self, conn, table: str, wanted: list[str]) -> list[str]:
+        """Return wanted-cols that actually exist on `table` in this tracker.db.
+        Older tracker schemas may be missing the Phase 4d additions
+        (worker, is_productive, etc); fall back gracefully."""
+        present = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        return [c for c in wanted if c in present]
+
     def fetch_new_segments(self, limit: int = 1000) -> list[dict]:
         """Read context_1 rows newer than the recorded cutoff. Returns dicts
-        keyed to match TrackerSegmentIn (server-side Pydantic model)."""
+        keyed to match TrackerSegmentIn (server-side Pydantic model). Columns
+        not present in the local tracker schema are filled with None so the
+        dict shape stays stable for the uploader."""
         if not self.tracker_db.exists():
             print(
                 f"warning: tracker.db not found at {self.tracker_db}; "
@@ -173,8 +191,46 @@ class TrackerWatcher:
             f"file:{self.tracker_db}?mode=ro", uri=True, timeout=30.0,
         ) as c:
             c.row_factory = sqlite3.Row
-            rows = c.execute(SQL_FETCH, (cutoff, int(limit))).fetchall()
-        return [{col: row[col] for col in COLUMNS} for row in rows]
+            cols = self._resolve_columns(c, "context_1", ALL_SEGMENT_COLUMNS)
+            sql = (
+                f"SELECT {', '.join(cols)} FROM context_1 "
+                f"WHERE timestamp_start > ? ORDER BY timestamp_start LIMIT ?"
+            )
+            rows = c.execute(sql, (cutoff, int(limit))).fetchall()
+        # Always return all 18 keys; missing cols → None so server defaults apply.
+        return [
+            {col: (row[col] if col in cols else None) for col in ALL_SEGMENT_COLUMNS}
+            for row in rows
+        ]
+
+    def fetch_frames_for_segments(self, segment_ids: list[str]) -> list[dict]:
+        """Read context_2 rows for the given target_segment_ids. Used to ship
+        frames alongside their parent segments. Returns dicts matching the
+        TrackerFrameIn server-side model."""
+        if not segment_ids or not self.tracker_db.exists():
+            return []
+        # Filter Nones / empty strings to be safe.
+        seg_ids = [s for s in segment_ids if s]
+        if not seg_ids:
+            return []
+        with sqlite3.connect(
+            f"file:{self.tracker_db}?mode=ro", uri=True, timeout=30.0,
+        ) as c:
+            c.row_factory = sqlite3.Row
+            cols = self._resolve_columns(c, "context_2", FRAME_COLUMNS)
+            if "id" not in cols or "target_segment_id" not in cols:
+                return []  # context_2 schema mismatch; skip
+            placeholders = ",".join("?" for _ in seg_ids)
+            sql = (
+                f"SELECT {', '.join(cols)} FROM context_2 "
+                f"WHERE target_segment_id IN ({placeholders}) "
+                f"ORDER BY target_segment_id, target_frame_number"
+            )
+            rows = c.execute(sql, seg_ids).fetchall()
+        return [
+            {col: (row[col] if col in cols else None) for col in FRAME_COLUMNS}
+            for row in rows
+        ]
 
     # ── Write state ──────────────────────────────────────────────────────
     def mark_uploaded(self, segments: list[dict]) -> None:

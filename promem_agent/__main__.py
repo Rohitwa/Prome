@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 import keyring
 
 from promem_agent import __version__, oauth, updater
-from promem_agent.uploader import MAX_BATCH, UploadError, upload_segments
+from promem_agent.uploader import MAX_BATCH, UploadError, upload_frames, upload_segments
 from promem_agent.watcher import TrackerWatcher, default_state_path
 
 
@@ -109,8 +109,10 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     try:
         w = TrackerWatcher()
-        total_received = 0
-        total_inserted = 0
+        total_seg_received = 0
+        total_seg_inserted = 0
+        total_frame_received = 0
+        total_frame_inserted = 0
         iterations = 0
         while True:
             segs = w.fetch_new_segments(limit=MAX_BATCH)
@@ -118,17 +120,32 @@ def cmd_run(args: argparse.Namespace) -> int:
                 break
             iterations += 1
             log.debug("iter %d: uploading %d segment(s)", iterations, len(segs))
-            result = upload_segments(segs)
+            seg_result = upload_segments(segs)
+            total_seg_received += seg_result.n_received
+            total_seg_inserted += seg_result.n_inserted
+
+            # Phase 4d: ship the per-frame context_2 rows that belong to the
+            # segments we just uploaded. Done BEFORE mark_uploaded so a frame
+            # upload failure doesn't advance the segment cutoff.
+            seg_ids = [s["target_segment_id"] for s in segs if s.get("target_segment_id")]
+            frames = w.fetch_frames_for_segments(seg_ids) if seg_ids else []
+            if frames:
+                frame_result = upload_frames(frames)
+                total_frame_received += frame_result.n_received
+                total_frame_inserted += frame_result.n_inserted
+                log.debug("iter %d: uploaded %d frame(s)", iterations, len(frames))
+
             w.mark_uploaded(segs)
-            total_received += result.n_received
-            total_inserted += result.n_inserted
         duration = time.monotonic() - started
         if iterations == 0:
             log.info("nothing to upload (queue empty); duration=%.2fs", duration)
         else:
             log.info(
-                "uploaded %d segment(s) in %d iteration(s) (received=%d, inserted=%d); duration=%.2fs",
-                total_inserted, iterations, total_received, total_inserted, duration,
+                "uploaded %d segment(s) + %d frame(s) in %d iteration(s) "
+                "(seg received=%d inserted=%d, frame received=%d inserted=%d); duration=%.2fs",
+                total_seg_inserted, total_frame_inserted, iterations,
+                total_seg_received, total_seg_inserted,
+                total_frame_received, total_frame_inserted, duration,
             )
 
         # Throttled manifest check (no-op in dev or if checked < 1h ago).
