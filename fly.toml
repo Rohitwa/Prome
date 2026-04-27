@@ -19,9 +19,11 @@ primary_region = 'bom'
 [http_service]
   internal_port = 8888
   force_https = true
-  auto_stop_machines = 'stop'
+  # Keep at least one machine running so the in-app APScheduler ticks
+  # for the cloud orchestrator (4c.5c). Auto-stop disabled accordingly.
+  auto_stop_machines = 'off'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ['app']
 
   [[http_service.checks]]

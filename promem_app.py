@@ -34,16 +34,22 @@ Run:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
 import sqlite3
 import sys
+import traceback
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Optional
 
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -60,7 +66,64 @@ TEMPLATES = Jinja2Templates(directory=str(ROOT / "templates"))
 # .env loading happens in db.py (imported above) so anything pulling in
 # auth/db gets the env vars without duplicating the loader.
 
-app = FastAPI(title="ProMem")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Cloud orchestrator scheduler (Phase 4c.5c)
+# ──────────────────────────────────────────────────────────────────────────────
+# In-app APScheduler that drives the multi-user orchestrator:
+#   - Fast loop  (every 30 min): sync only — raw activity → work_pages
+#   - Slow loop  (14:00 + 18:00 UTC daily): classify + filter + match + synthesis
+#
+# Requires fly.toml min_machines_running=1 (set in 4c.5c) so the scheduler
+# actually ticks. Without that, Fly auto-stops the machine when idle and
+# the scheduler hibernates with it.
+_scheduler = BackgroundScheduler(timezone="UTC")
+
+
+def _fast_loop_job() -> None:
+    try:
+        from promem_orchestrator_cloud import run_fast_loop
+        run_fast_loop()
+    except Exception:
+        print("scheduler: fast_loop crashed:\n" + traceback.format_exc())
+
+
+def _slow_loop_job() -> None:
+    try:
+        from promem_orchestrator_cloud import run_slow_loop
+        run_slow_loop()
+    except Exception:
+        print("scheduler: slow_loop crashed:\n" + traceback.format_exc())
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    _scheduler.add_job(
+        _fast_loop_job,
+        IntervalTrigger(minutes=30),
+        id="fast_loop",
+        max_instances=1,            # don't overlap with previous run
+        coalesce=True,              # collapse missed ticks
+        misfire_grace_time=300,
+    )
+    _scheduler.add_job(
+        _slow_loop_job,
+        CronTrigger(hour="14,18", minute=0, timezone="UTC"),
+        id="slow_loop",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600,
+    )
+    _scheduler.start()
+    print("scheduler: started — fast every 30min, slow at 14:00+18:00 UTC")
+    try:
+        yield
+    finally:
+        _scheduler.shutdown(wait=False)
+        print("scheduler: shutdown")
+
+
+app = FastAPI(title="ProMem", lifespan=_lifespan)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
