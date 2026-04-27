@@ -429,28 +429,37 @@ def projects_new(request: Request, user_id: str = Depends(get_current_user)) -> 
 
 
 def _cloud_productivity_data(c, user_id: str, sel_date: str, sel_dt) -> dict:
-    """Compute productivity widgets from tracker_segments (cloud Postgres).
-    Used when local tracker.db is not present (i.e., on Fly). Some fields
-    that only the local Mac tracker captures (is_productive flag, worker
-    classification, per-frame keyboard/mouse activity) are not yet uploaded
-    to cloud and surface as 0 / placeholders."""
+    """Compute productivity widgets from tracker_segments + tracker_frames
+    (cloud Postgres). Used when local tracker.db is not present (i.e., on
+    Fly). After Phase 4d, the cloud schema mirrors enough of context_1 +
+    context_2 that this path renders the same fields the Mac path does.
+
+    Note: rows uploaded by v0.1.4 agents (before Phase 4d shipped the
+    extra columns) have NULL for worker / is_productive / frame counts;
+    those rows contribute 0 to those breakdowns, while newly-uploaded
+    rows light up the dashboard fully."""
     from datetime import timedelta as _td2, datetime as _dt2
 
-    # Stats — total time + segment count for the selected day
+    # Stats — total time + segment count + productive/human/ai breakdowns
+    # (Phase 4d: real values from is_productive / worker / frame_count cols).
     stats_row = c.execute("""
         SELECT COALESCE(SUM(target_segment_length_secs), 0) AS total_secs,
+               COALESCE(SUM(CASE WHEN is_productive = 1 THEN target_segment_length_secs ELSE 0 END), 0) AS prod_secs,
+               COALESCE(SUM(CASE WHEN worker = 'human' THEN target_segment_length_secs ELSE 0 END), 0) AS human_secs,
+               COALESCE(SUM(CASE WHEN worker IN ('ai','autonomous','agent') THEN target_segment_length_secs ELSE 0 END), 0) AS ai_secs,
+               COALESCE(SUM(human_frame_count), 0) AS human_frames,
+               COALESCE(SUM(ai_frame_count), 0) AS ai_frames,
                COUNT(*) AS n_segments
         FROM tracker_segments
         WHERE user_id = %s AND substring(timestamp_start, 1, 10) = %s
     """, (user_id, sel_date)).fetchone()
-    total_min = round((stats_row["total_secs"] or 0) / 60)
     stats = {
-        "total_min":   total_min,
-        "prod_min":    total_min,    # cloud lacks is_productive flag yet
-        "human_min":   0,            # cloud lacks worker classification yet
-        "ai_min":      0,
-        "human_frames": 0,           # cloud lacks per-frame data (context_2)
-        "ai_frames":   0,
+        "total_min":   round((stats_row["total_secs"]  or 0) / 60),
+        "prod_min":    round((stats_row["prod_secs"]   or 0) / 60),
+        "human_min":   round((stats_row["human_secs"]  or 0) / 60),
+        "ai_min":      round((stats_row["ai_secs"]     or 0) / 60),
+        "human_frames": stats_row["human_frames"] or 0,
+        "ai_frames":   stats_row["ai_frames"] or 0,
         "n_segments":  stats_row["n_segments"] or 0,
     }
 
@@ -489,11 +498,11 @@ def _cloud_productivity_data(c, user_id: str, sel_date: str, sel_dt) -> dict:
             "is_sel": (d == sel_date),
         })
 
-    # Top apps by time today
+    # Top apps by time today (use platform as fallback when window_name is empty)
     by_app = [
         {"app": (r["app"] or "—")[:60], "secs": int(r["secs"] or 0)}
         for r in c.execute("""
-            SELECT COALESCE(NULLIF(window_name, ''), '—') AS app,
+            SELECT COALESCE(NULLIF(window_name, ''), NULLIF(platform, ''), '—') AS app,
                    SUM(target_segment_length_secs) AS secs
             FROM tracker_segments
             WHERE user_id = %s AND substring(timestamp_start, 1, 10) = %s
@@ -516,13 +525,14 @@ def _cloud_productivity_data(c, user_id: str, sel_date: str, sel_dt) -> dict:
         if 0 <= hr < 24:
             hour_counts[hr] = int((r["secs"] or 0) // 60)
 
-    # Recent segments (most recent 12 today)
+    # Recent segments (most recent 12 today). Worker badge in template
+    # color-codes human / ai / agent / autonomous.
     recent = [
         {"time": (r["timestamp_start"] or "")[11:16],
          "title": r["short_title"] or r["window_name"] or "—",
-         "worker": "—"}
+         "worker": r["worker"] or "—"}
         for r in c.execute("""
-            SELECT timestamp_start, short_title, window_name
+            SELECT timestamp_start, short_title, window_name, worker
             FROM tracker_segments
             WHERE user_id = %s AND substring(timestamp_start, 1, 10) = %s
             ORDER BY timestamp_start DESC
@@ -530,13 +540,31 @@ def _cloud_productivity_data(c, user_id: str, sel_date: str, sel_dt) -> dict:
         """, (user_id, sel_date)).fetchall()
     ]
 
+    # Input activity — JOIN tracker_frames for the keyboard/mouse counts.
+    # Frames-with-kb / frames-with-mouse counted separately so the dashboard
+    # surfaces both even if a frame has both flags.
+    inp_row = c.execute("""
+        SELECT COUNT(*) AS frames,
+               COALESCE(SUM(CASE WHEN has_keyboard_activity THEN 1 ELSE 0 END), 0) AS kb,
+               COALESCE(SUM(CASE WHEN has_mouse_activity    THEN 1 ELSE 0 END), 0) AS mouse
+        FROM tracker_frames f
+        JOIN tracker_segments s
+          ON s.target_segment_id = f.target_segment_id AND s.user_id = f.user_id
+        WHERE s.user_id = %s AND substring(s.timestamp_start, 1, 10) = %s
+    """, (user_id, sel_date)).fetchone()
+    input_act = {
+        "frames": inp_row["frames"] or 0,
+        "kb":     inp_row["kb"] or 0,
+        "mouse":  inp_row["mouse"] or 0,
+    }
+
     return {
         "stats":       stats,
         "coverage":    coverage,
         "weekly":      weekly,
         "by_app":      by_app,
         "hour_counts": hour_counts,
-        "input_act":   {"frames": 0, "kb": 0, "mouse": 0},  # not yet on cloud
+        "input_act":   input_act,
         "recent":      recent,
     }
 
