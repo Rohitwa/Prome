@@ -179,6 +179,24 @@ if not defined PYTHON_EXE (
 
 echo        Using: !PYTHON_EXE!
 
+REM Diagnostic: report whether Python's directory is on PATH. Setup.bat
+REM doesn't NEED it (we use absolute paths everywhere from here on), but
+REM a user typing `python` in a fresh shell later will only get a hit
+REM if it's on PATH — flagging this helps surface the common "I installed
+REM Python but `python` does nothing" gotcha.
+for %%D in ("!PYTHON_EXE!") do set "_PY_DIR=%%~dpD"
+REM strip trailing backslash for clean PATH comparison
+if defined _PY_DIR set "_PY_DIR=!_PY_DIR:~0,-1!"
+echo ;!PATH!; | findstr /I /C:";!_PY_DIR!;" >nul
+if errorlevel 1 (
+    echo        On PATH: NO  ^(setup.bat works without it; for `python` to
+    echo                     work in a new shell, add !_PY_DIR! to PATH
+    echo                     via Settings -^> System -^> Environment Variables^)
+) else (
+    echo        On PATH: yes
+)
+set "_PY_DIR="
+
 REM --- Step 2: Verify version >= 3.10 ------------------------------------
 echo [2/11] Verifying Python version is 3.10 or newer...
 "!PYTHON_EXE!" -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)"
