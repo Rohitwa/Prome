@@ -290,6 +290,17 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Pre-create tracker.db with the proper schema so the agent's init step
+REM (step 9) doesn't print "tracker.db not found", and any startup pre-flight
+REM check finds a valid empty DB. Idempotent: Database.initialize() uses
+REM SQLAlchemy create_all + a custom migrator, both no-op on an existing DB.
+"%INSTALL_DIR%\.venv\Scripts\python.exe" -c "from src.storage.db import Database; Database(db_path=r'%TRACKER_DB%').initialize()" 2>nul
+if errorlevel 1 (
+    echo        NOTE: tracker.db pre-init failed; tracker will create it on first launch.
+) else (
+    echo        tracker.db schema initialized at %TRACKER_DB%
+)
+
 REM --- Step 8: Write runner scripts and register startup mechanism --------
 echo [8/11] Writing runner scripts and registering startup mechanism...
 
