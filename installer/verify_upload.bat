@@ -105,24 +105,58 @@ if not defined TRACKER_OK if not defined AGENT_OK (
     exit /b 1
 )
 
-REM ─── 3. tracker.db existence ──────────────────────────────────────────
+REM ─── 3. tracker.db existence + tracker process liveness ──────────────
 echo.
-echo -- 3. tracker.db --
+echo -- 3. tracker --
 if not exist "%DB%" (
     echo   [!] tracker.db not found at %DB%
-    if defined TRACKER_OK (
-        echo   [.] Starting ProMem Tracker task and waiting 60 seconds for first capture...
-        schtasks /Run /TN "ProMem Tracker" >nul 2>&1
-        timeout /t 60 /nobreak >nul
-    )
+    call :start_tracker
+    timeout /t 60 /nobreak >nul
     if not exist "%DB%" (
-        echo   [-] tracker.db still missing. Tracker not running.
+        echo   [-] tracker.db still missing after start attempt. Tracker not running.
         echo       Re-run setup.bat to refresh runners.
         pause
         exit /b 1
     )
 )
 for %%I in ("%DB%") do echo   [+] tracker.db   : %%~zI bytes, last write %%~tI
+
+REM Is the tracker python process actually alive? Use PowerShell + WMI
+REM (CommandLine isn't visible to plain `tasklist`). 0 = not running, >=1 = running.
+set "TRACKER_PROC=0"
+for /f "delims=" %%C in ('powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" -ErrorAction SilentlyContinue ^| Where-Object { $_.CommandLine -like '*src.agent.tracker*' }).Count" 2^>nul') do set "TRACKER_PROC=%%C"
+
+if "!TRACKER_PROC!"=="0" (
+    echo   [!] tracker python process is NOT running — attempting to resume...
+    call :start_tracker
+    timeout /t 30 /nobreak >nul
+    REM Re-check after restart attempt.
+    set "TRACKER_PROC=0"
+    for /f "delims=" %%C in ('powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" -ErrorAction SilentlyContinue ^| Where-Object { $_.CommandLine -like '*src.agent.tracker*' }).Count" 2^>nul') do set "TRACKER_PROC=%%C"
+    if "!TRACKER_PROC!"=="0" (
+        echo   [-] tracker still not running after restart attempt.
+        echo       Try: schtasks /Run /TN "ProMem Tracker"
+        echo       Or:  start "" /B "%INSTALL%\tracker_runner.bat"
+        echo       Or re-run setup.bat to refresh the runners.
+        pause
+        exit /b 1
+    )
+    echo   [+] tracker process : RESUMED ^(!TRACKER_PROC! python process^(es^) running^)
+) else (
+    echo   [+] tracker process : alive ^(!TRACKER_PROC! python process^(es^) running^)
+)
+
+REM Quick freshness check: if tracker.db hasn't been touched in >5 min while a
+REM tracker process is alive, that's odd — surface it as a soft warning.
+REM (User idle >5min is normal — the tracker pauses then. So just informational.)
+for /f "delims=" %%A in ('powershell -NoProfile -Command "[int](((Get-Date) - (Get-Item '%DB%').LastWriteTime).TotalSeconds)" 2^>nul') do set "DB_AGE_SEC=%%A"
+if defined DB_AGE_SEC (
+    if !DB_AGE_SEC! GTR 300 (
+        echo   [.] tracker.db last write was !DB_AGE_SEC!s ago ^(>5min — user may be idle, or tracker is starved^)
+    ) else (
+        echo   [+] tracker.db   : last write !DB_AGE_SEC!s ago ^(active^)
+    )
+)
 
 REM ─── 4. Captured rows ─────────────────────────────────────────────────
 echo.
@@ -253,4 +287,23 @@ echo   [-] Network error reaching https://promem.fly.dev
 echo       Check: corporate firewall, VPN, proxy settings, internet connection.
 del "%TMP_RUN%" 2>nul
 pause
+exit /b 1
+
+REM ─── Subroutine: start the tracker via the best available mechanism ──
+REM Tries schtasks first (works if the schtask was registered); falls back
+REM to launching tracker_runner.bat directly via `start /B` (works for the
+REM HKCU\Run fallback case or when the schtask is missing entirely).
+:start_tracker
+schtasks /Query /TN "ProMem Tracker" /FO LIST >nul 2>&1
+if not errorlevel 1 (
+    echo   [.] Starting tracker via schtasks /Run "ProMem Tracker"...
+    schtasks /Run /TN "ProMem Tracker" >nul 2>&1
+    if not errorlevel 1 exit /b 0
+)
+if exist "%INSTALL%\tracker_runner.bat" (
+    echo   [.] Starting tracker via tracker_runner.bat directly...
+    start "ProMem Tracker" /B /MIN cmd /c "%INSTALL%\tracker_runner.bat"
+    exit /b 0
+)
+echo   [!] No way to start the tracker — neither schtasks nor tracker_runner.bat available.
 exit /b 1
