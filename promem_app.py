@@ -1101,6 +1101,24 @@ def get_agent_dist(filename: str) -> FileResponse:
     return FileResponse(str(p), media_type="application/zip", filename=filename)
 
 
+@app.get("/install.ps1")
+def get_install_ps1() -> FileResponse:
+    """Serve the PowerShell one-line installer. Hosted at the root so users
+    can run:
+        iwr https://promem.fly.dev/install.ps1 -UseBasicParsing | iex
+
+    Source of truth lives in the repo at installer/install.ps1, copied into
+    the image by Dockerfile's `COPY . .`. The .ps1 itself just bootstraps:
+    ensures Python via winget if missing, downloads the latest agent zip via
+    the manifest, extracts, and hands off to setup.bat."""
+    p = ROOT / "installer" / "install.ps1"
+    if not p.exists():
+        raise HTTPException(500, "installer/install.ps1 missing from image")
+    # text/plain so the browser displays it for inspection rather than offering
+    # a download dialog. `iwr` doesn't care about the content-type either way.
+    return FileResponse(str(p), media_type="text/plain; charset=utf-8", filename="install.ps1")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Form handlers (HTML form posts → /projects/new)
 # ──────────────────────────────────────────────────────────────────────────────
