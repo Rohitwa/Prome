@@ -242,15 +242,17 @@ REM Spawn tracker_runner.bat in a new window so this script can finish.
 start "ProMem Tracker" /B cmd /c "%INSTALL_DIR%\tracker_runner.bat"
 start "" "https://promem.fly.dev/wiki"
 
-REM --- Step 11: Verify ingest end-to-end (wait + force agent run) --------
-echo [11/11] Waiting 60s for tracker to capture a first segment, then forcing an upload...
+REM --- Step 11: Verify ingest end-to-end (wait + force agent recover) ----
+echo [11/11] Waiting 60s for tracker to capture a first segment, then forcing a backfill...
 REM Tracker needs ~30-60s to capture screenshots, finalize a segment via SSIM,
 REM classify it via the Worker, and write it to context_1. We then run the
-REM agent once explicitly (same code path the schtask fires every 5 min) so
-REM the user sees data in the dashboard immediately rather than waiting for
-REM the next scheduled run.
+REM agent's `recover --apply` (rather than plain `run`) so any leftover data
+REM from prior install layouts (legacy ~/.productivity-tracker/tracker.db,
+REM rows beyond the existing state cutoff, etc.) gets uploaded on the same
+REM trip — not just the most recent segment. ON CONFLICT DO NOTHING server-
+REM side makes re-uploads cheap.
 timeout /t 60 /nobreak >nul
-"%INSTALL_DIR%\.venv\Scripts\python.exe" -m promem_agent --verbose run
+"%INSTALL_DIR%\.venv\Scripts\python.exe" -m promem_agent --verbose recover --apply --days 30
 if errorlevel 1 (
     echo.
     echo ============================================================

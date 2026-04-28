@@ -191,6 +191,15 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recover(args: argparse.Namespace) -> int:
+    """Diagnose and optionally fix idle data on disk (unsynced rows, orphan PNGs).
+    See promem_agent/recover.py for full behavior."""
+    log.info("agent recover start (version=%s, apply=%s, delete_orphans=%s, days=%d)",
+             __version__, args.apply, args.delete_orphans, args.days)
+    from promem_agent.recover import recover as do_recover
+    return do_recover(apply=args.apply, delete_orphans=args.delete_orphans, days=args.days)
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Read-only health check. Always exits 0 (info command, parse output)."""
     w = TrackerWatcher()
@@ -256,6 +265,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("run",     help="fetch new tracker segments and upload")
     sub.add_parser("dry-run", help="like 'run' but prints what would upload")
     sub.add_parser("status",  help="read-only health check")
+    rec = sub.add_parser("recover", help="diagnose/backfill idle data + orphan PNGs")
+    rec.add_argument("--apply", action="store_true",
+                     help="upload unsynced rows (incl. from legacy ~/.productivity-tracker/ paths)")
+    rec.add_argument("--delete-orphans", action="store_true",
+                     help="delete PNGs on disk with no Context2 row referencing them")
+    rec.add_argument("--days", type=int, default=30,
+                     help="lookback window in days (default: 30)")
     return p
 
 
@@ -269,6 +285,7 @@ def _main(argv: list[str]) -> int:
         "run":     cmd_run,
         "dry-run": cmd_dry_run,
         "status":  cmd_status,
+        "recover": cmd_recover,
     }
     handler = handlers.get(args.cmd)
     if handler is None:
