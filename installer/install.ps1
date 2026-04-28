@@ -110,15 +110,52 @@ if (-not $py) {
         Start-Process "https://www.python.org/downloads/"
         throw "winget unavailable; cannot auto-install Python"
     }
-    & winget install --id Python.Python.3.12 --scope user --accept-package-agreements --accept-source-agreements --silent
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "      WARNING: winget exit code $LASTEXITCODE; trying re-detect anyway..." -ForegroundColor Yellow
+
+    # Pin --source winget. Without this flag, winget queries BOTH msstore and
+    # winget sources, and on machines where msstore's geographic-region
+    # agreements haven't been accepted yet the search fails with
+    # 0x8a15000f "Data required by the source is missing" — even though the
+    # Python package itself lives in the winget source and would have
+    # installed cleanly. --source winget skips msstore entirely.
+    & winget install --id Python.Python.3.12 --source winget --scope user --accept-package-agreements --accept-source-agreements --silent
+    $wingetExit = $LASTEXITCODE
+    if ($wingetExit -ne 0) {
+        Write-Host "      WARNING: winget exit code $wingetExit. Falling back to direct python.org download..." -ForegroundColor Yellow
+        # Direct python.org installer fallback. Picks the official 3.12 amd64
+        # silent installer; quiet flags + per-user scope so no admin needed.
+        $pyInstallerUrl = "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe"
+        $pyInstaller = Join-Path $env:TEMP "python-3.12.7-installer.exe"
+        Write-Host "      Downloading $pyInstallerUrl ..."
+        try {
+            Invoke-WebRequest -Uri $pyInstallerUrl -OutFile $pyInstaller -UseBasicParsing
+            Write-Host "      Running silent install (per-user, with PATH)..."
+            & $pyInstaller /quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1 Include_pip=1
+            # python.org installer returns control immediately even though it's
+            # still installing in the background — wait briefly then poll.
+            Start-Sleep -Seconds 20
+        } catch {
+            Write-Host "      Direct download also failed: $_" -ForegroundColor Red
+            Start-Process "https://www.python.org/downloads/"
+            throw "Could not auto-install Python. Install manually from python.org (check 'Add to PATH' + 'Install for all users') and re-run this command."
+        }
     }
+
     # Refresh PATH from registry so this session sees the new Python.
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
     $py = Find-RealPython
     if (-not $py) {
-        throw "Python install via winget did not produce a discoverable interpreter. Install manually from python.org and re-run this command."
+        # Sometimes the python.org installer takes longer than 20s. Give it more.
+        Write-Host "      Waiting up to 60s more for Python install to finish..."
+        for ($i = 0; $i -lt 12; $i++) {
+            Start-Sleep -Seconds 5
+            $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+            $py = Find-RealPython
+            if ($py) { break }
+        }
+    }
+    if (-not $py) {
+        Start-Process "https://www.python.org/downloads/"
+        throw "Python install did not produce a discoverable interpreter after 60s. Install manually from python.org (check 'Add Python to PATH' + 'Install for all users') and re-run this command."
     }
 }
 Write-Host "      [+] Python: $py" -ForegroundColor Green
