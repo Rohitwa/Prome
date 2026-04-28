@@ -28,29 +28,44 @@ echo   ProMem installer (tracker + cloud agent)
 echo ========================================================
 echo.
 
-REM --- Step 1: Locate Python (admin-context-safe) ------------------------
+REM --- Step 1: Locate Python (admin-context-safe + Store-stub-safe) -----
 REM Under "Run as administrator" on machines where Python was installed
 REM with "Just me" + "Add to PATH", the elevated session may not see the
-REM user's PATH and `where python` fails. Fall through several known
+REM user's PATH and `where python` fails. We fall through several known
 REM locations so admin-mode installs never falsely report missing Python.
+REM
+REM Also: on Win10/11, `python` and `py` may resolve to a Microsoft Store
+REM ALIAS at %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe (App Execution
+REM Alias). Invoking it triggers a Store popup and a Python download — and
+REM even if the user accepts, the Store-installed Python is sandboxed and
+REM venv creation later hangs/fails. We detect any path under \WindowsApps\
+REM and skip it, falling through to a real install or a clear error.
 echo [1/11] Locating Python 3.10+...
 
 set "PYTHON_EXE="
 
-REM 1. Python launcher (system-wide, most reliable under admin)
-where py >nul 2>&1
-if not errorlevel 1 (
-    for /f "delims=" %%p in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do (
-        if not defined PYTHON_EXE set "PYTHON_EXE=%%p"
+REM 1. Python launcher (system-wide, most reliable under admin) — skip Store stub.
+for /f "delims=" %%p in ('where py 2^>nul') do (
+    if not defined PYTHON_EXE (
+        echo %%p | findstr /I /C:"WindowsApps" >nul
+        if errorlevel 1 (
+            for /f "delims=" %%q in ('"%%p" -3 -c "import sys; print(sys.executable)" 2^>nul') do (
+                if not defined PYTHON_EXE set "PYTHON_EXE=%%q"
+            )
+        )
     )
 )
 
-REM 2. python on PATH
+REM 2. python on PATH — skip Store stub.
 if not defined PYTHON_EXE (
-    where python >nul 2>&1
-    if not errorlevel 1 (
-        for /f "delims=" %%p in ('where python') do (
-            if not defined PYTHON_EXE set "PYTHON_EXE=%%p"
+    for /f "delims=" %%p in ('where python 2^>nul') do (
+        if not defined PYTHON_EXE (
+            echo %%p | findstr /I /C:"WindowsApps" >nul
+            if errorlevel 1 (
+                for /f "delims=" %%q in ('"%%p" -c "import sys; print(sys.executable)" 2^>nul') do (
+                    if not defined PYTHON_EXE set "PYTHON_EXE=%%q"
+                )
+            )
         )
     )
 )
@@ -73,14 +88,31 @@ if not defined PYTHON_EXE (
     )
 )
 
+REM Final guard: if the resolved sys.executable still ends up under
+REM WindowsApps (rare with non-Store launchers but possible), reject it.
+if defined PYTHON_EXE (
+    echo !PYTHON_EXE! | findstr /I /C:"WindowsApps" >nul
+    if not errorlevel 1 (
+        set "PYTHON_EXE="
+    )
+)
+
 if not defined PYTHON_EXE (
     echo.
-    echo ERROR: Python 3.10+ not found.
+    echo ERROR: A real Python 3.10+ install was not found.
+    echo.
+    echo If a Microsoft Store window opened asking to install Python,
+    echo CANCEL it — that is the Store alias, not a real Python. The
+    echo Store version is sandboxed and breaks venv creation later.
     echo.
     echo Install Python 3.12 from:  https://www.python.org/downloads/
     echo IMPORTANT: Check both:
     echo   * "Add Python to PATH"
     echo   * "Install for all users"   ^(avoids PATH issues under admin^)
+    echo.
+    echo Also disable the Store alias once installed:
+    echo   Settings -^> Apps -^> Advanced app settings -^> App execution aliases
+    echo   Toggle OFF "App Installer python" and "App Installer python3"
     echo.
     start "" "https://www.python.org/downloads/"
     pause
