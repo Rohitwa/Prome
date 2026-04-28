@@ -189,9 +189,12 @@ REM strip trailing backslash for clean PATH comparison
 if defined _PY_DIR set "_PY_DIR=!_PY_DIR:~0,-1!"
 echo ;!PATH!; | findstr /I /C:";!_PY_DIR!;" >nul
 if errorlevel 1 (
-    echo        On PATH: NO  ^(setup.bat works without it; for `python` to
-    echo                     work in a new shell, add !_PY_DIR! to PATH
-    echo                     via Settings -^> System -^> Environment Variables^)
+    echo        On PATH: NO — adding !_PY_DIR! to your user PATH ^(takes effect in new shells^)...
+    REM Append to the user's HKCU\Environment\Path via PowerShell. User scope
+    REM doesn't need admin. Skips if the dir is already there. New shells will
+    REM see python on PATH; the current setup.bat session keeps using
+    REM absolute paths so nothing breaks here.
+    powershell -NoProfile -Command "$d='!_PY_DIR!'; $p=[Environment]::GetEnvironmentVariable('Path','User'); if (-not $p) { $p='' }; if (-not (($p -split ';') -contains $d)) { [Environment]::SetEnvironmentVariable('Path', ($p.TrimEnd(';') + ';' + $d).TrimStart(';'), 'User'); Write-Host '       Added to user PATH. Open a new terminal to use python directly.' } else { Write-Host '       Already in user PATH.' }" 2>nul
 ) else (
     echo        On PATH: yes
 )
@@ -259,14 +262,30 @@ if errorlevel 1 (
 REM --- Step 7: Install productivity-tracker package (Promem-minimal) -----
 echo [7/11] Installing productivity-tracker package (Promem-minimal mode)...
 REM No `[pmis]` extras: chromadb stays out, PMIS subsystems gate to no-op.
-REM --force-reinstall --no-deps: refreshes the tracker package code without
-REM re-pulling its (large) dependency tree on every install. Required because
-REM productivity-tracker's version field is static at 0.1.0 and pip would
-REM otherwise skip reinstall when the same version is already in the venv,
-REM leaving stale code from a prior install.
+REM
+REM Two-step install:
+REM  (a) `pip install --upgrade <dir>` — installs/upgrades the tracker package
+REM      AND its declared dependencies (python-dotenv, sqlalchemy, openai,
+REM      Pillow, mss, pywin32, pynput, etc). Without this, a fresh venv has
+REM      none of the tracker's runtime imports and the tracker crashes on
+REM      first launch with `ModuleNotFoundError: No module named 'dotenv'`.
+REM      No-op when deps are already at requested versions, so re-installs
+REM      stay fast.
+REM  (b) `pip install --force-reinstall --no-deps <dir>` — refreshes ONLY
+REM      the tracker package source (no re-resolution of deps). Required
+REM      because productivity-tracker's version field is static at 0.1.0,
+REM      so step (a)'s --upgrade no-ops on a same-version source change.
+REM      This guarantees the latest source from the bundled zip lands in
+REM      the venv even when pip thinks 0.1.0 == 0.1.0.
+"%INSTALL_DIR%\.venv\Scripts\pip.exe" install --quiet --disable-pip-version-check --upgrade "%TRACKER_DIR%"
+if errorlevel 1 (
+    echo ERROR: pip install of productivity-tracker dependencies failed. Check your internet connection.
+    pause
+    exit /b 1
+)
 "%INSTALL_DIR%\.venv\Scripts\pip.exe" install --quiet --disable-pip-version-check --force-reinstall --no-deps "%TRACKER_DIR%"
 if errorlevel 1 (
-    echo ERROR: pip install of productivity-tracker failed. Check your internet connection.
+    echo ERROR: pip force-reinstall of productivity-tracker source failed.
     pause
     exit /b 1
 )
