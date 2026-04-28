@@ -235,7 +235,7 @@ if errorlevel 1 (
 )
 copy /Y "%SRC_DIR%requirements-agent.txt" "%INSTALL_DIR%\" >nul
 if exist "%SRC_DIR%uninstall.bat" copy /Y "%SRC_DIR%uninstall.bat" "%INSTALL_DIR%\" >nul
-if exist "%SRC_DIR%verify_upload.ps1" copy /Y "%SRC_DIR%verify_upload.ps1" "%INSTALL_DIR%\" >nul
+if exist "%SRC_DIR%verify_upload.bat" copy /Y "%SRC_DIR%verify_upload.bat" "%INSTALL_DIR%\" >nul
 
 REM --- Step 5: Create venv -----------------------------------------------
 echo [5/11] Creating virtual environment at %INSTALL_DIR%\.venv ...
