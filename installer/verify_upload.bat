@@ -32,6 +32,13 @@ set "TMP_RUN=%TEMP%\promem_verify_run.txt"
 set "TMP_STATUS=%TEMP%\promem_verify_status.txt"
 set "TMP_COUNTS=%TEMP%\promem_verify_counts.txt"
 
+REM `python -m promem_agent` resolves the package via cwd / PYTHONPATH —
+REM the runner.bat that schtasks uses cd's to %INSTALL% first. We do the
+REM same here (and also export PYTHONPATH as belt-and-suspenders) so this
+REM script works regardless of where the user double-clicked it from.
+if exist "%INSTALL%" cd /d "%INSTALL%"
+set "PYTHONPATH=%INSTALL%"
+
 echo.
 echo ============================================================
 echo  ProMem Upload Verifier
