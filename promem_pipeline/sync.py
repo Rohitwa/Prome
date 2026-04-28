@@ -39,12 +39,21 @@ def _last_sync(user_id: str) -> datetime | None:
 
 def _cutoff(user_id: str) -> str:
     """Pull from max(last_sync_at, today - INITIAL_BACKFILL_DAYS).
-    Returns an ISO string suitable for `WHERE timestamp_start > ?`."""
+    Returns an ISO string suitable for `WHERE timestamp_start > ?`.
+
+    Critical: tracker_segments.timestamp_start is stored as TEXT in the
+    Python str(datetime) format '2026-04-28 15:29:31' (SPACE separator).
+    Python's default isoformat() returns '2026-04-28T15:29:31' (T separator).
+    Postgres compares these as TEXT, position-by-position: at offset 10 the
+    cutoff would have 'T' (0x54) and the segment has ' ' (0x20), and since
+    ' ' < 'T' lexicographically, every same-date segment is wrongly rejected
+    by `timestamp_start > cutoff`. Force `sep=' '` to match the tracker
+    format so the comparison reflects actual wall-clock order."""
     last = _last_sync(user_id)
     backfill = datetime.now() - timedelta(days=INITIAL_BACKFILL_DAYS)
     if last is None or last < backfill:
-        return backfill.isoformat()
-    return last.isoformat()
+        return backfill.isoformat(sep=' ')
+    return last.isoformat(sep=' ')
 
 
 def _fetch_segments_from_tracker(tracker_db: Path, cutoff: str) -> list:
