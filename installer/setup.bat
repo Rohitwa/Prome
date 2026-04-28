@@ -15,6 +15,7 @@ REM ======================================================================
 set "APPNAME=ProMem"
 set "TASK_AGENT=ProMem Agent"
 set "TASK_TRACKER=ProMem Tracker"
+set "TASK_HEALTH=ProMem Health"
 set "INSTALL_DIR=%LOCALAPPDATA%\%APPNAME%"
 set "TRACKER_DIR=%INSTALL_DIR%\productivity-tracker"
 set "TRACKER_DB=%INSTALL_DIR%\tracker.db"
@@ -235,7 +236,7 @@ if errorlevel 1 (
 )
 copy /Y "%SRC_DIR%requirements-agent.txt" "%INSTALL_DIR%\" >nul
 if exist "%SRC_DIR%uninstall.bat" copy /Y "%SRC_DIR%uninstall.bat" "%INSTALL_DIR%\" >nul
-if exist "%SRC_DIR%verify_upload.bat" copy /Y "%SRC_DIR%verify_upload.bat" "%INSTALL_DIR%\" >nul
+if exist "%SRC_DIR%verify_health.bat" copy /Y "%SRC_DIR%verify_health.bat" "%INSTALL_DIR%\" >nul
 
 REM --- Step 5: Create venv -----------------------------------------------
 echo [5/11] Creating virtual environment at %INSTALL_DIR%\.venv ...
@@ -363,6 +364,36 @@ if errorlevel 1 (
 ) else (
     echo        Tracker: scheduled task registered ^(at logon^)
     reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "ProMem Tracker" /f >nul 2>&1
+)
+
+REM Health-check runner: invokes verify_health.bat in silent mode every 15 min,
+REM redirecting all output to %INSTALL_DIR%\health.log. The verifier itself
+REM auto-resumes a stopped tracker, re-uploads on 401, etc.
+> "%INSTALL_DIR%\health_runner.bat" (
+    echo @echo off
+    echo REM ProMem health runner - schtask invokes this every 15 min.
+    echo "%INSTALL_DIR%\verify_health.bat" silent ^>^> "%INSTALL_DIR%\health.log" 2^>^&1
+)
+
+REM Try schtasks for health (every 15 min). On failure, fall back to HKCU\Run
+REM with a 15-min self-loop. Same denial fallback pattern as the agent task.
+schtasks /Create /TN "%TASK_HEALTH%" /TR "\"%INSTALL_DIR%\health_runner.bat\"" /SC MINUTE /MO 15 /F /RL LIMITED >nul 2>&1
+if errorlevel 1 (
+    echo        Health: schtasks denied -^> using HKCU\Run fallback
+    REM Build a 15-min loop bat that calls health_runner.bat.
+    > "%INSTALL_DIR%\health_loop.bat" (
+        echo @echo off
+        echo REM ProMem health loop - HKCU\Run fallback ^(15-min cadence^).
+        echo :loop
+        echo call "%INSTALL_DIR%\health_runner.bat"
+        echo timeout /t 900 /nobreak ^>nul
+        echo goto :loop
+    )
+    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "ProMem Health" /t REG_SZ /d "cmd /c start \"\" /min \"%INSTALL_DIR%\health_loop.bat\"" /f >nul
+    start "ProMem Health" /B /MIN cmd /c "%INSTALL_DIR%\health_loop.bat"
+) else (
+    echo        Health: scheduled task registered ^(every 15 min, silent self-heal^)
+    reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "ProMem Health" /f >nul 2>&1
 )
 
 REM --- Step 9: Trigger one-time OAuth login ------------------------------

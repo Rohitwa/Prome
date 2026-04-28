@@ -96,7 +96,7 @@ cp -r promem_agent          "$STAGE_DIR/"
 cp     requirements-agent.txt "$STAGE_DIR/"
 cp     installer/setup.bat   "$STAGE_DIR/"
 cp     installer/uninstall.bat "$STAGE_DIR/"
-cp     installer/verify_upload.bat "$STAGE_DIR/"
+cp     installer/verify_health.bat "$STAGE_DIR/"
 cp     installer/README.txt  "$STAGE_DIR/"
 
 # Bundle productivity-tracker source. Path is overridable via env var so we

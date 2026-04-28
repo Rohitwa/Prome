@@ -2,27 +2,37 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 REM ======================================================================
-REM  verify_upload.bat — ProMem upload health check + auto-remediation.
+REM  verify_health.bat -- ProMem combined tracker + upload health check
+REM                       with auto-remediation.
 REM
-REM  What it does, in order:
-REM    1. Confirms install layout (venv, source, runner bats).
-REM    2. Confirms scheduled tasks (or HKCU\Run fallback) are registered.
-REM    3. Confirms tracker.db exists; if not, starts the tracker task and waits.
-REM    4. Counts captured rows so we know there is something to upload.
-REM    5. Confirms OAuth is alive; re-runs promem_agent init if not.
-REM    6. Forces an agent run, parses the result, and remediates failures:
-REM        - 401 auth expired       -> re-runs OAuth, retries
-REM        - Network error          -> firewall/VPN hint
-REM        - Other                  -> points to agent.log
+REM  Two modes:
+REM    INTERACTIVE (default)        user double-clicks; verbose output,
+REM                                 if not defined SILENT pauses at terminal states for review.
+REM    SILENT  ("silent" arg)       unattended; no pauses (intended for
+REM                                 scheduled-task invocation via the
+REM                                 health_runner.bat wrapper that
+REM                                 redirects all output to health.log).
+REM
+REM  Six checks (each remediates what it can):
+REM    1. Install layout intact (venv + source + runner bats).
+REM    2. Tracker + agent registered as schtasks OR HKCU\Run.
+REM    3. tracker.db exists + python tracker process is alive +
+REM       db freshness.  If process dead -> auto-resume via
+REM       schtasks /Run, falling back to `start /B tracker_runner.bat`.
+REM    4. Captured row counts (informational).
+REM    5. OAuth state; runs `promem_agent init` only when interactive
+REM       (silent mode can't drive a browser).
+REM    6. Force an agent run; remediates 401 (re-init), network errors,
+REM       prints failure summary with log path.
 REM
 REM  Exit codes:
-REM    0  upload working (with or without new rows uploaded this run)
+REM    0  healthy (with or without new rows uploaded this run)
 REM    1  unrecoverable (re-run setup.bat or fix network)
-REM    2  user action needed (waited but no captures yet, or OAuth required)
-REM
-REM  Usage: double-click this file, OR run:
-REM    "%LOCALAPPDATA%\ProMem\verify_upload.bat"
+REM    2  user action needed (no captures yet OR OAuth required in silent mode)
 REM ======================================================================
+
+set "SILENT="
+if /I "%~1"=="silent" set "SILENT=1"
 
 set "INSTALL=%LOCALAPPDATA%\ProMem"
 set "PY=%INSTALL%\.venv\Scripts\python.exe"
@@ -50,13 +60,13 @@ echo -- 1. Install integrity --
 if not exist "%INSTALL%" (
     echo   [-] ProMem not installed at %INSTALL%
     echo       Run setup.bat first.
-    pause
+    if not defined SILENT pause
     exit /b 1
 )
 if not exist "%PY%" (
     echo   [-] Python venv missing at %PY%
     echo       Re-run setup.bat to create it.
-    pause
+    if not defined SILENT pause
     exit /b 1
 )
 echo   [+] Install dir : %INSTALL%
@@ -101,7 +111,7 @@ if not defined TRACKER_OK if not defined AGENT_OK (
     echo.
     echo   Neither tracker nor agent is registered.
     echo   Re-run setup.bat ^(right-click -^> Run as administrator if needed^).
-    pause
+    if not defined SILENT pause
     exit /b 1
 )
 
@@ -115,7 +125,7 @@ if not exist "%DB%" (
     if not exist "%DB%" (
         echo   [-] tracker.db still missing after start attempt. Tracker not running.
         echo       Re-run setup.bat to refresh runners.
-        pause
+        if not defined SILENT pause
         exit /b 1
     )
 )
@@ -138,7 +148,7 @@ if "!TRACKER_PROC!"=="0" (
         echo       Try: schtasks /Run /TN "ProMem Tracker"
         echo       Or:  start "" /B "%INSTALL%\tracker_runner.bat"
         echo       Or re-run setup.bat to refresh the runners.
-        pause
+        if not defined SILENT pause
         exit /b 1
     )
     echo   [+] tracker process : RESUMED ^(!TRACKER_PROC! python process^(es^) running^)
@@ -164,7 +174,7 @@ echo -- 4. Captured data --
 "%PY%" -c "import sqlite3; c=sqlite3.connect(r'%DB%'); print(c.execute('SELECT COUNT(*) FROM context_1').fetchone()[0]); print(c.execute('SELECT COUNT(*) FROM context_2').fetchone()[0])" > "%TMP_COUNTS%" 2>nul
 if errorlevel 1 (
     echo   [-] Could not read tracker.db.
-    pause
+    if not defined SILENT pause
     exit /b 1
 )
 set "N_SEGS="
@@ -181,7 +191,7 @@ echo   context_2      : !N_FRAMES! frame(s)
 
 if "!N_SEGS!"=="0" (
     echo   [!] No segments captured yet. Wait 1-2 minutes after the tracker starts, then re-run.
-    pause
+    if not defined SILENT pause
     exit /b 2
 )
 
@@ -196,12 +206,18 @@ if not errorlevel 1 (
     findstr /C:"no refresh_token" "%TMP_STATUS%" >nul
     if not errorlevel 1 (
         echo   [!] No refresh token in Windows Credential Manager.
+        if defined SILENT (
+            echo   [-] Cannot run OAuth init in silent mode ^(needs browser^).
+            echo       User must double-click verify_health.bat to re-auth interactively.
+            del "%TMP_STATUS%" 2>nul
+            exit /b 2
+        )
         echo   [.] Running promem_agent init ^(opens browser^)...
         "%PY%" -m promem_agent init
         if errorlevel 1 (
             echo   [-] OAuth flow failed. Run manually:
             echo       "%PY%" -m promem_agent init
-            pause
+            if not defined SILENT pause
             exit /b 2
         )
         echo   [+] OAuth completed.
@@ -229,7 +245,7 @@ if "!RUN_EXIT!"=="0" (
     )
     del "%TMP_RUN%" 2>nul
     echo.
-    pause
+    if not defined SILENT pause
     exit /b 0
 )
 
@@ -254,7 +270,7 @@ echo.
 echo   [-] Upload failed for an unrecognized reason.
 echo       Open the log: notepad %LOG%
 del "%TMP_RUN%" 2>nul
-pause
+if not defined SILENT pause
 exit /b 1
 
 :reauth_retry
@@ -264,7 +280,7 @@ echo   [!] Auth expired ^(HTTP 401^). Re-running OAuth...
 if errorlevel 1 (
     echo   [-] Re-auth failed. Check Supabase service status.
     del "%TMP_RUN%" 2>nul
-    pause
+    if not defined SILENT pause
     exit /b 1
 )
 echo.
@@ -273,12 +289,12 @@ echo -- Retry after re-auth --
 if not errorlevel 1 (
     echo   [+] Upload resumed after re-auth.
     del "%TMP_RUN%" 2>nul
-    pause
+    if not defined SILENT pause
     exit /b 0
 )
 echo   [-] Upload still failing after re-auth. See log: notepad %LOG%
 del "%TMP_RUN%" 2>nul
-pause
+if not defined SILENT pause
 exit /b 1
 
 :network_fail
@@ -286,7 +302,7 @@ echo.
 echo   [-] Network error reaching https://promem.fly.dev
 echo       Check: corporate firewall, VPN, proxy settings, internet connection.
 del "%TMP_RUN%" 2>nul
-pause
+if not defined SILENT pause
 exit /b 1
 
 REM ─── Subroutine: start the tracker via the best available mechanism ──
