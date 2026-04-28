@@ -57,7 +57,8 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 import db
-from auth import get_current_user, _verify as _verify_jwt
+import admin_queries
+from auth import get_current_user, require_admin, _get_role, _verify as _verify_jwt
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("PROMEM_DATA_DIR", str(ROOT / "data")))
@@ -227,7 +228,17 @@ def auth_logout(user_id: str = Depends(get_current_user)) -> JSONResponse:
 # Routes — pages
 # ──────────────────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
-def root() -> RedirectResponse:
+def root(request: Request) -> RedirectResponse:
+    """Admins land on /admin; everyone else on /wiki. Auth check is deferred
+    to the destination route — landing here when unauthenticated still works."""
+    promem_session = request.cookies.get("promem_session")
+    if promem_session:
+        try:
+            payload = _verify_jwt(promem_session)
+            if _get_role(payload["sub"]) == "admin":
+                return RedirectResponse(url="/admin")
+        except Exception:
+            pass
     return RedirectResponse(url="/wiki")
 
 
@@ -760,6 +771,39 @@ def productivity(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Admin dashboard — org-level read-only rollup, gated by org_members.role='admin'
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/admin", response_class=HTMLResponse)
+def admin_dashboard(
+    request: Request,
+    user_id: str = Depends(require_admin),
+) -> HTMLResponse:
+    with db.conn() as c:
+        users = admin_queries.org_productivity_7d(c)
+        projects = admin_queries.org_project_rollup_7d(c)
+        deliverables = admin_queries.org_deliverables_7d(c)
+
+    delivs_by_project: dict[str, list] = {}
+    for d in deliverables:
+        delivs_by_project.setdefault(d["project_id"], []).append(d)
+
+    totals = {
+        "total_mins_7d": sum(float(u["mins_7d"]) for u in users),
+        "total_users": len(users),
+        "active_users": sum(1 for u in users if float(u["mins_7d"]) > 0),
+        "alive_projects": sum(1 for p in projects if p["is_alive"]),
+        "total_projects": len(projects),
+    }
+
+    return TEMPLATES.TemplateResponse(request, "promem_admin.html", {
+        "users": users,
+        "projects": projects,
+        "delivs_by_project": delivs_by_project,
+        "totals": totals,
+    })
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Routes — APIs
 # ──────────────────────────────────────────────────────────────────────────────
 class ProjectIn(BaseModel):
@@ -938,12 +982,20 @@ def api_upload_segments(
             detail=f"max {UPLOAD_SEGMENTS_MAX} segments per request "
                    f"(received {n_received}); chunk client-side",
         )
+    # Every row in tracker_segments represents a captured (non-idle, non-asleep)
+    # block of activity — by definition that's productive time in the simple
+    # model: prod = human + ai = total. We force is_productive=1 here regardless
+    # of what the agent uploaded; the legacy local pipeline_sync.py:220 sets it
+    # based on a deliverable match score that never runs in cloud-only installs,
+    # so the field would otherwise stay at -1 and zero out prod_min on the
+    # dashboard. (When SOW deliverables ship later, on-goal time can live in a
+    # separate column rather than overloading is_productive.)
     rows = [
         (user_id, s.id, s.target_segment_id, s.timestamp_start, s.timestamp_end,
          s.target_segment_length_secs, s.short_title, s.window_name,
          s.detailed_summary, s.supercontext, s.context,
          # Phase 4d additions:
-         s.worker, s.is_productive, s.human_frame_count, s.ai_frame_count,
+         s.worker, 1, s.human_frame_count, s.ai_frame_count,
          s.platform, s.medium, s.full_text, s.anchor)
         for s in payload.segments
     ]
