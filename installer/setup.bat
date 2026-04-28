@@ -28,35 +28,55 @@ echo   ProMem installer (tracker + cloud agent)
 echo ========================================================
 echo.
 
-REM --- Step 1: Locate Python (admin-context-safe + Store-stub-safe) -----
-REM Under "Run as administrator" on machines where Python was installed
-REM with "Just me" + "Add to PATH", the elevated session may not see the
-REM user's PATH and `where python` fails. We fall through several known
-REM locations so admin-mode installs never falsely report missing Python.
+REM --- Step 1: Locate Python (exhaustive auto-detection) ----------------
+REM Seven progressively-broader checks. The goal: if a real Python 3.10+
+REM exists ANYWHERE the user might have installed it, find it and skip
+REM straight to step 2. Only fail if all seven miss.
 REM
-REM Also: on Win10/11, `python` and `py` may resolve to a Microsoft Store
-REM ALIAS at %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe (App Execution
-REM Alias). Invoking it triggers a Store popup and a Python download — and
-REM even if the user accepts, the Store-installed Python is sandboxed and
-REM venv creation later hangs/fails. We detect any path under \WindowsApps\
-REM and skip it, falling through to a real install or a clear error.
+REM Skip Microsoft Store stubs (\WindowsApps\) at every step — those are
+REM aliases that open a Store popup and a sandboxed Python that breaks
+REM venv creation later.
+REM
+REM Manual escape hatch: set PYTHON_EXE in your shell BEFORE running
+REM setup.bat (e.g. `set PYTHON_EXE=C:\my\python.exe ^&^& setup.bat`)
+REM and the auto-detection is skipped entirely.
 echo [1/11] Locating Python 3.10+...
 
-set "PYTHON_EXE="
+REM Honor user-provided PYTHON_EXE if it points to an existing file.
+if defined PYTHON_EXE (
+    if exist "%PYTHON_EXE%" (
+        echo        User-provided PYTHON_EXE = %PYTHON_EXE%
+    ) else (
+        echo        WARNING: PYTHON_EXE was set to %PYTHON_EXE% but file does not exist; ignoring.
+        set "PYTHON_EXE="
+    )
+)
 
-REM 1. Python launcher (system-wide, most reliable under admin) — skip Store stub.
-for /f "delims=" %%p in ('where py 2^>nul') do (
-    if not defined PYTHON_EXE (
-        echo %%p | findstr /I /C:"WindowsApps" >nul
-        if errorlevel 1 (
-            for /f "delims=" %%q in ('"%%p" -3 -c "import sys; print(sys.executable)" 2^>nul') do (
-                if not defined PYTHON_EXE set "PYTHON_EXE=%%q"
+REM 1. Direct path to the Python launcher — always at C:\Windows\py.exe
+REM    when Python was installed via python.org for all users. No PATH
+REM    dependency, works under "Run as administrator" without inheriting
+REM    the regular user's PATH.
+if not defined PYTHON_EXE if exist "C:\Windows\py.exe" (
+    for /f "delims=" %%q in ('"C:\Windows\py.exe" -3 -c "import sys; print(sys.executable)" 2^>nul') do (
+        if not defined PYTHON_EXE set "PYTHON_EXE=%%q"
+    )
+)
+
+REM 2. py launcher on PATH (skip Store stub).
+if not defined PYTHON_EXE (
+    for /f "delims=" %%p in ('where py 2^>nul') do (
+        if not defined PYTHON_EXE (
+            echo %%p | findstr /I /C:"WindowsApps" >nul
+            if errorlevel 1 (
+                for /f "delims=" %%q in ('"%%p" -3 -c "import sys; print(sys.executable)" 2^>nul') do (
+                    if not defined PYTHON_EXE set "PYTHON_EXE=%%q"
+                )
             )
         )
     )
 )
 
-REM 2. python on PATH — skip Store stub.
+REM 3. python on PATH (skip Store stub).
 if not defined PYTHON_EXE (
     for /f "delims=" %%p in ('where python 2^>nul') do (
         if not defined PYTHON_EXE (
@@ -70,47 +90,85 @@ if not defined PYTHON_EXE (
     )
 )
 
-REM 3. Standard install dirs (user install, "Just me")
+REM 4. Windows Registry (PEP 514). Both python.org installers and most
+REM    third-party Pythons (Anaconda, etc.) register their ExecutablePath
+REM    here. This survives admin/UAC context mismatches, missing PATH, and
+REM    non-standard install directories — it answers "where did Python say
+REM    it lives" rather than guessing where files might be.
 if not defined PYTHON_EXE (
-    for %%v in (313 312 311 310) do (
+    for %%H in (HKLM HKCU) do (
+        if not defined PYTHON_EXE (
+            for /f "tokens=2,*" %%a in ('reg query "%%H\Software\Python\PythonCore" /s /v ExecutablePath 2^>nul ^| findstr /I "ExecutablePath"') do (
+                if not defined PYTHON_EXE if exist "%%b" set "PYTHON_EXE=%%b"
+            )
+        )
+    )
+)
+
+REM 5. Standard "Just me" install dirs (versions 3.10 through 3.16).
+if not defined PYTHON_EXE (
+    for %%v in (316 315 314 313 312 311 310) do (
         if not defined PYTHON_EXE if exist "%LOCALAPPDATA%\Programs\Python\Python%%v\python.exe" (
             set "PYTHON_EXE=%LOCALAPPDATA%\Programs\Python\Python%%v\python.exe"
         )
     )
 )
 
-REM 4. Standard install dirs (all-users install)
+REM 6. Standard "Install for all users" dirs.
 if not defined PYTHON_EXE (
-    for %%v in (313 312 311 310) do (
+    for %%v in (316 315 314 313 312 311 310) do (
         if not defined PYTHON_EXE if exist "C:\Program Files\Python%%v\python.exe" (
             set "PYTHON_EXE=C:\Program Files\Python%%v\python.exe"
         )
     )
 )
 
-REM Final guard: if the resolved sys.executable still ends up under
-REM WindowsApps (rare with non-Store launchers but possible), reject it.
+REM 7. Common third-party / legacy install paths (Anaconda, miniconda,
+REM    bare C:\PythonXX, ProgramData installs).
+if not defined PYTHON_EXE (
+    for %%P in (
+        "C:\Python313\python.exe"
+        "C:\Python312\python.exe"
+        "C:\Python311\python.exe"
+        "C:\Python310\python.exe"
+        "%USERPROFILE%\anaconda3\python.exe"
+        "%USERPROFILE%\miniconda3\python.exe"
+        "C:\ProgramData\Anaconda3\python.exe"
+        "C:\ProgramData\miniconda3\python.exe"
+    ) do (
+        if not defined PYTHON_EXE if exist %%P set "PYTHON_EXE=%%~P"
+    )
+)
+
+REM Final guard: if the resolved sys.executable ends up under WindowsApps
+REM (rare hybrid installs where a non-stub launcher returned a Store path),
+REM reject it — Store Python's sandbox breaks venv create later.
 if defined PYTHON_EXE (
     echo !PYTHON_EXE! | findstr /I /C:"WindowsApps" >nul
     if not errorlevel 1 (
+        echo        WARNING: Discovered Python is a Microsoft Store stub at !PYTHON_EXE!; rejecting.
         set "PYTHON_EXE="
     )
 )
 
 if not defined PYTHON_EXE (
     echo.
-    echo ERROR: A real Python 3.10+ install was not found.
+    echo ERROR: Python 3.10+ was not found in any standard location.
     echo.
-    echo If a Microsoft Store window opened asking to install Python,
-    echo CANCEL it — that is the Store alias, not a real Python. The
-    echo Store version is sandboxed and breaks venv creation later.
+    echo Tried: C:\Windows\py.exe, "where py", "where python", Windows
+    echo Registry ^(HKLM and HKCU Software\Python\PythonCore^),
+    echo %LOCALAPPDATA%\Programs\Python\, C:\Program Files\Python*\,
+    echo C:\Python*\, Anaconda/miniconda dirs.
     echo.
-    echo Install Python 3.12 from:  https://www.python.org/downloads/
-    echo IMPORTANT: Check both:
-    echo   * "Add Python to PATH"
-    echo   * "Install for all users"   ^(avoids PATH issues under admin^)
+    echo If your Python lives at a non-standard path, set it manually:
+    echo   set "PYTHON_EXE=C:\path\to\your\python.exe"
+    echo   setup.bat
     echo.
-    echo Also disable the Store alias once installed:
+    echo Or install fresh from:  https://www.python.org/downloads/
+    echo IMPORTANT: Check "Add Python to PATH" + "Install for all users".
+    echo.
+    echo If a Microsoft Store window opened, CANCEL it — that's the Store
+    echo alias, not a real Python. Disable it via:
     echo   Settings -^> Apps -^> Advanced app settings -^> App execution aliases
     echo   Toggle OFF "App Installer python" and "App Installer python3"
     echo.
