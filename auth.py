@@ -60,6 +60,7 @@ def _get_jwks_client() -> PyJWKClient:
 
 
 _seeded_users: set[str] = set()
+_user_roles: dict[str, str] = {}
 
 
 def _ensure_user_seeded(user_id: str) -> None:
@@ -74,6 +75,26 @@ def _ensure_user_seeded(user_id: str) -> None:
         # Don't fail auth if seeding hiccups — let the request through and
         # we'll retry on the next request from this user.
         pass
+
+
+def _get_role(user_id: str) -> str:
+    """Look up org_members.role for this user, cached per-process.
+    Returns 'user' if the row is missing (defensive default)."""
+    if user_id in _user_roles:
+        return _user_roles[user_id]
+    role = "user"
+    try:
+        with db.conn() as c:
+            row = c.execute(
+                "SELECT role FROM org_members WHERE user_id = %s",
+                (user_id,),
+            ).fetchone()
+        if row and row["role"]:
+            role = row["role"]
+    except Exception:
+        pass
+    _user_roles[user_id] = role
+    return role
 
 
 def _verify(token: str) -> dict:
@@ -149,6 +170,20 @@ def get_current_user(
         "email": payload.get("email") or "",
         "name": meta.get("full_name") or meta.get("name") or "",
         "avatar_url": meta.get("avatar_url") or "",
+        "role": _get_role(user_id),
     }
     _ensure_user_seeded(user_id)
+    return user_id
+
+
+def require_admin(
+    user_id: str = Depends(get_current_user),
+) -> str:
+    """Same JWT auth as get_current_user, plus enforces
+    org_members.role='admin'. Used to gate the /admin dashboard."""
+    if _get_role(user_id) != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
     return user_id

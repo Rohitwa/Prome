@@ -36,6 +36,27 @@
   .btn:hover { background: var(--bg); border-color: var(--fg3); }
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn svg { width: 18px; height: 18px; }
+  .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn-primary:hover { background: #1d4ed8; border-color: #1d4ed8; }
+  .divider {
+    display: flex; align-items: center; gap: 10px;
+    margin: 18px 0; color: var(--fg3); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.6px;
+  }
+  .divider::before, .divider::after {
+    content: ""; flex: 1; height: 1px; background: var(--border);
+  }
+  .field { text-align: left; margin-bottom: 10px; }
+  .field label {
+    display: block; font-size: 11px; color: var(--fg2); margin-bottom: 4px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .field input {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--border);
+    border-radius: 8px; font-size: 14px; font-family: inherit;
+    color: var(--fg); background: var(--card);
+  }
+  .field input:focus { outline: none; border-color: var(--accent); }
   .status {
     margin-top: 16px; font-size: 12px; color: var(--fg3); min-height: 16px;
   }
@@ -57,6 +78,21 @@
     </svg>
     Continue with Google
   </button>
+
+  <div class="divider">or</div>
+
+  <form id="pwform" autocomplete="on">
+    <div class="field">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="username" required>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <button id="pwsubmit" type="submit" class="btn btn-primary">Sign in with email</button>
+  </form>
+
   <div id="status" class="status"></div>
   <div class="footer">By signing in you agree to ProMem storing your session.</div>
 </div>
@@ -133,6 +169,47 @@
       btn.disabled = false
       setStatus(error.message, true)
     }
+  })
+
+  // Email + password sign-in (used by admins and any user created via
+  // Supabase Dashboard "Add user" rather than OAuth).
+  const pwform = document.getElementById('pwform')
+  const pwsubmit = document.getElementById('pwsubmit')
+  pwform.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    pwsubmit.disabled = true
+    setStatus('Signing in…')
+    const email = document.getElementById('email').value.trim()
+    const password = document.getElementById('password').value
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) {
+      pwsubmit.disabled = false
+      setStatus(error.message, true)
+      return
+    }
+    const token = data && data.session ? data.session.access_token : null
+    if (!token) {
+      pwsubmit.disabled = false
+      setStatus('No session returned', true)
+      return
+    }
+    try {
+      const r = await fetch('/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: token }),
+      })
+      if (!r.ok) {
+        pwsubmit.disabled = false
+        setStatus('Session set failed: ' + (await r.text()), true)
+        return
+      }
+    } catch (err) {
+      pwsubmit.disabled = false
+      setStatus('Network error: ' + err.message, true)
+      return
+    }
+    window.location.href = NEXT || '/wiki'
   })
 
   // Attempt to settle on first load (handles the post-OAuth redirect case).

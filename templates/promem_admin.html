@@ -1,0 +1,358 @@
+{% extends "promem_base.html" %}
+{% set active = "admin" %}
+{% block title %}admin — ProMem{% endblock %}
+{% block extra_css %}
+.stat-row { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));
+            gap:12px; margin:14px 0 24px; }
+.stat-card { background:var(--bg); border:1px solid var(--border); border-radius:10px;
+             padding:14px 16px; }
+.stat-card .label { font-size:11px; color:var(--fg3); text-transform:uppercase;
+                    letter-spacing:0.5px; margin-bottom:6px; }
+.stat-card .value { font-size:22px; font-weight:700; color:var(--fg);
+                    font-family:ui-monospace,monospace; }
+.stat-card .sub { font-size:11px; color:var(--fg3); margin-top:4px; }
+
+h2.section { font-size:15px; margin:26px 0 10px; padding-bottom:6px;
+             border-bottom:1px solid var(--border); }
+
+table.org-table { width:100%; border-collapse:collapse; background:var(--bg);
+                  border:1px solid var(--border); border-radius:10px; overflow:hidden;
+                  font-size:13px; }
+.org-table th, .org-table td { padding:9px 12px; text-align:left;
+                                border-bottom:1px solid var(--border); }
+.org-table th { background:var(--bg3); font-size:11px; text-transform:uppercase;
+                color:var(--fg3); letter-spacing:0.4px; font-weight:600; }
+.org-table tr:last-child td { border-bottom:none; }
+.org-table td.num { font-family:ui-monospace,monospace; text-align:right; }
+.org-table .email { font-family:ui-monospace,monospace; font-size:12px; }
+.role-badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:10px;
+              font-weight:700; text-transform:uppercase; letter-spacing:0.4px; }
+.role-admin { background:#fef3c7; color:#92400e; }
+.role-user  { background:#e5e7eb; color:#374151; }
+.dim { color:var(--fg3); }
+
+.proj-card { background:var(--bg); border:1px solid var(--border); border-radius:10px;
+             margin:10px 0; overflow:hidden; }
+.proj-card summary { padding:12px 16px; cursor:pointer; display:flex; align-items:center;
+                     gap:12px; font-size:14px; flex-wrap:wrap; user-select:none; }
+.proj-card summary:hover { background:var(--bg2); }
+.proj-card[open] summary { border-bottom:1px solid var(--border); background:var(--bg2); }
+.proj-card .pname { font-weight:700; font-size:15px; flex:1; }
+.proj-card .stat { font-family:ui-monospace,monospace; font-size:11px; color:var(--fg3);
+                   background:var(--bg3); padding:2px 8px; border-radius:8px; }
+.proj-card .alive { background:#dcfce7; color:#166534; }
+.proj-card .empty { padding:14px 16px; color:var(--fg3); font-style:italic; font-size:12px; }
+.deliv-table { width:100%; border-collapse:collapse; font-size:12px; }
+.deliv-table th, .deliv-table td { padding:8px 16px; text-align:left;
+                                    border-bottom:1px solid var(--border); }
+.deliv-table th { background:var(--bg2); font-size:10px; text-transform:uppercase;
+                  color:var(--fg3); letter-spacing:0.4px; }
+.deliv-table tr:last-child td { border-bottom:none; }
+
+.refresh-note { font-size:11px; color:var(--fg3); margin-top:6px; font-style:italic; }
+.empty-state { text-align:center; color:var(--fg3); padding:30px 0; font-style:italic;
+               font-size:13px; background:var(--bg); border:1px dashed var(--border);
+               border-radius:10px; }
+
+.pulse-banner { background:var(--bg); border:1px solid var(--border);
+                border-left:4px solid var(--gray); border-radius:10px;
+                padding:12px 18px; margin:14px 0; display:flex;
+                gap:18px; align-items:center; flex-wrap:wrap; }
+.pulse-banner.health-green { border-left-color:var(--green); }
+.pulse-banner.health-amber { border-left-color:var(--amber); }
+.pulse-banner.health-red   { border-left-color:var(--red); }
+.pulse-banner .label { font-size:10px; color:var(--fg3); text-transform:uppercase;
+                       letter-spacing:0.6px; font-weight:700; }
+.pulse-banner .stat { display:inline-flex; align-items:baseline; gap:6px;
+                      font-size:13px; }
+.pulse-banner .stat .v { font-family:ui-monospace,monospace; font-weight:700;
+                          font-size:15px; color:var(--fg); }
+.pulse-banner .stat .sub { color:var(--fg3); font-size:11px;
+                            font-family:ui-monospace,monospace; }
+.pulse-banner .sep { color:var(--border); }
+.pulse-banner .latest { font-size:11px; color:var(--fg3);
+                         font-family:ui-monospace,monospace; margin-left:auto; }
+
+.actionbar { display:flex; gap:10px; align-items:center; margin:14px 0; flex-wrap:wrap; }
+.actionbar .alerts-pill { background:#fee2e2; color:#991b1b; padding:3px 10px;
+                           border-radius:10px; font-size:11px; font-weight:600; }
+.actionbar .resync-all { background:var(--blue); color:#fff; border:none;
+                          border-radius:8px; padding:8px 16px; font-size:13px;
+                          font-weight:600; cursor:pointer; font-family:inherit; }
+.actionbar .resync-all:hover { background:#1d4ed8; }
+.actionbar .resync-all:disabled { opacity:0.6; cursor:not-allowed; }
+.actionbar .resync-status { font-size:11px; color:var(--fg3); font-style:italic; }
+.actionbar .resync-status.error { color:var(--red); }
+
+.user-panel { background:var(--bg); border:1px solid var(--border);
+              border-radius:10px; margin:10px 0; overflow:hidden; }
+.user-panel summary { padding:12px 16px; cursor:pointer; display:flex;
+                      align-items:center; gap:12px; user-select:none; flex-wrap:wrap; }
+.user-panel summary:hover { background:var(--bg2); }
+.user-panel[open] summary { border-bottom:1px solid var(--border); background:var(--bg2); }
+.user-panel .pemail { font-weight:600; font-family:ui-monospace,monospace; font-size:13px; }
+.user-panel .pmuted { color:var(--fg3); font-size:12px; }
+.user-panel .role-mini { background:var(--bg3); color:var(--fg3); padding:2px 7px;
+                          border-radius:8px; font-size:10px; text-transform:uppercase;
+                          letter-spacing:0.4px; font-weight:600; }
+.user-panel .alert-badge { background:#fee2e2; color:#991b1b; padding:2px 8px;
+                            border-radius:10px; font-size:11px; font-weight:600; }
+.user-panel .resync-mini { margin-left:auto; background:var(--bg); border:1px solid var(--border);
+                            border-radius:6px; padding:4px 10px; font-size:11px;
+                            cursor:pointer; font-family:inherit; color:var(--fg2); }
+.user-panel .resync-mini:hover { border-color:var(--blue); color:var(--blue); }
+.user-panel .resync-mini:disabled { opacity:0.5; cursor:not-allowed; }
+
+.health-dot { width:10px; height:10px; border-radius:50%; background:var(--gray);
+              display:inline-block; flex-shrink:0; }
+.health-dot.health-green { background:var(--green); }
+.health-dot.health-amber { background:var(--amber); }
+.health-dot.health-red   { background:var(--red); }
+
+.feed { padding:12px 16px; max-height:340px; overflow-y:auto; background:var(--bg2); }
+.feed-row { display:flex; gap:10px; align-items:baseline; padding:5px 0;
+            font-size:12px; border-bottom:1px solid transparent; }
+.feed-ts { color:var(--fg3); font-family:ui-monospace,monospace; font-size:11px;
+           min-width:170px; flex-shrink:0; }
+.feed-icon { width:18px; flex-shrink:0; text-align:center; }
+.feed-msg { flex:1; color:var(--fg2); overflow:hidden; text-overflow:ellipsis;
+            white-space:nowrap; }
+.feed-sub { color:var(--fg3); font-size:10px; font-family:ui-monospace,monospace;
+            background:var(--bg3); padding:1px 6px; border-radius:6px; flex-shrink:0; }
+.feed-row.alert_created  { color:var(--red); }
+.feed-row.alert_resolved { color:var(--green); }
+.feed-row.action_started, .feed-row.action_finished { color:var(--blue); }
+.feed-empty { padding:20px; text-align:center; color:var(--fg3); font-style:italic;
+              font-size:12px; }
+{% endblock %}
+{% block content %}
+<meta http-equiv="refresh" content="60">
+
+<div class="crumbs"><span style="color:var(--fg)">admin</span></div>
+<h1>Org Admin</h1>
+<p class="subtitle">Cross-user productivity + project rollup. Last 7 days.</p>
+<p class="refresh-note">Auto-refreshes every 60s.</p>
+
+{# Live data pulse — health colored by latest upload age (green <1h, amber <24h, red older) #}
+<div class="pulse-banner health-{{ pulse.segments_health }}">
+  <span class="label">Live pulse · last 5m</span>
+  <span class="stat">
+    <span class="v">{{ pulse.segments.last_5m or 0 }}</span> segments
+    <span class="sub">· {{ pulse.segments.users_5m or 0 }} user(s)</span>
+  </span>
+  <span class="sep">|</span>
+  <span class="stat">
+    <span class="v">{{ pulse.frames.last_5m or 0 }}</span> frames
+    <span class="sub">· {{ pulse.frames.users_5m or 0 }} user(s)</span>
+  </span>
+  <span class="sep">|</span>
+  <span class="stat">
+    <span class="v">{{ pulse.segments.last_1h or 0 }}</span> seg / 1h
+    <span class="sub">{{ pulse.segments.users_1h or 0 }} user(s)</span>
+  </span>
+  <span class="latest">latest seg upload: {{ pulse.segments.latest_upload or "—" }}</span>
+</div>
+
+<div class="actionbar">
+  {% if totals.open_alerts > 0 %}
+    <span class="alerts-pill">{{ totals.open_alerts }} open alert{{ "s" if totals.open_alerts != 1 else "" }}</span>
+  {% endif %}
+  <button id="resync-all-btn" class="resync-all" onclick="resyncAll()">Re-sync ALL users</button>
+  <span id="resync-all-status" class="resync-status"></span>
+</div>
+
+<div class="stat-row">
+  <div class="stat-card">
+    <div class="label">Total mins · 7d</div>
+    <div class="value">{{ "%.1f"|format(totals.total_mins_7d) }}</div>
+    <div class="sub">across {{ totals.total_users }} member(s)</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Active members</div>
+    <div class="value">{{ totals.active_users }} / {{ totals.total_users }}</div>
+    <div class="sub">non-zero 7d activity</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Alive projects</div>
+    <div class="value">{{ totals.alive_projects }} / {{ totals.total_projects }}</div>
+    <div class="sub">≥5 min in last 7d</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Deliverables</div>
+    <div class="value">
+      {%- set dcount = namespace(n=0) -%}
+      {%- for plist in delivs_by_project.values() %}{% set dcount.n = dcount.n + plist|length %}{% endfor -%}
+      {{ dcount.n }}
+    </div>
+    <div class="sub">across {{ totals.total_projects }} project(s)</div>
+  </div>
+</div>
+
+<h2 class="section">Productivity by user</h2>
+<table class="org-table">
+  <thead>
+    <tr>
+      <th>Email</th>
+      <th>Role</th>
+      <th class="num">Today</th>
+      <th class="num">7d</th>
+      <th class="num">Human</th>
+      <th class="num">AI</th>
+      <th>Last active</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for u in users %}
+    <tr>
+      <td class="email"><a href="/admin/user/{{ u.user_id }}" style="color:var(--blue);text-decoration:none">{{ u.email }}</a></td>
+      <td><span class="role-badge role-{{ u.role }}">{{ u.role }}</span></td>
+      <td class="num">{{ "%.1f"|format(u.mins_today|float) }}</td>
+      <td class="num">{{ "%.1f"|format(u.mins_7d|float) }}</td>
+      <td class="num">{{ "%.1f"|format(u.human_mins_7d|float) }}</td>
+      <td class="num">{{ "%.1f"|format(u.ai_mins_7d|float) }}</td>
+      <td class="dim">{{ u.last_active or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h2 class="section">User activity panels</h2>
+{% for u in users %}
+  {% if u.role == 'user' %}
+    <details class="user-panel" {% if u.open_alerts and u.open_alerts > 0 %}open{% endif %}>
+      <summary>
+        <span class="health-dot health-{{ u.pulse_health }}"></span>
+        <span class="pemail">{{ u.email }}</span>
+        <span class="role-mini">{{ u.role }}</span>
+        {% if u.last_upload %}
+          <span class="pmuted">last upload {{ "%.0f"|format(u.mins_since_upload) }} min ago</span>
+        {% else %}
+          <span class="pmuted">never uploaded</span>
+        {% endif %}
+        {% if u.open_alerts and u.open_alerts > 0 %}
+          <span class="alert-badge">{{ u.open_alerts }} alert{{ "s" if u.open_alerts != 1 else "" }}</span>
+        {% endif %}
+        <button class="resync-mini" onclick="event.preventDefault(); resyncUser('{{ u.user_id }}', this)">Re-sync</button>
+      </summary>
+      <div class="feed">
+        {% set feed = activity_feeds.get(u.user_id|string, []) %}
+        {% if feed %}
+          {% for ev in feed %}
+            <div class="feed-row {{ ev.kind }}">
+              <span class="feed-ts">{{ ev.ts }}</span>
+              <span class="feed-icon">
+                {%- if ev.kind == 'alert_created' -%}⚠
+                {%- elif ev.kind == 'alert_resolved' -%}✓
+                {%- elif ev.kind == 'action_started' -%}⚙
+                {%- elif ev.kind == 'action_finished' -%}✓
+                {%- elif ev.kind == 'segment_uploaded' -%}📥
+                {%- endif -%}
+              </span>
+              <span class="feed-msg">{{ ev.message }}</span>
+              {% if ev.subtype %}<span class="feed-sub">{{ ev.subtype }}</span>{% endif %}
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="feed-empty">No activity yet for this user.</div>
+        {% endif %}
+      </div>
+    </details>
+  {% endif %}
+{% endfor %}
+
+<h2 class="section">Projects &amp; deliverables</h2>
+{% if not projects %}
+  <div class="empty-state">
+    No projects yet. Admins create projects from each user's
+    <a href="/projects/new">/projects/new</a> view (top-down SOW).
+  </div>
+{% else %}
+  {% for p in projects %}
+  <details class="proj-card" {% if p.is_alive %}open{% endif %}>
+    <summary>
+      <span class="pname">{{ p.name }}</span>
+      <span class="stat">{{ p.status }}</span>
+      <span class="stat">{{ p.deliverable_count }} deliv</span>
+      <span class="stat">{{ "%.1f"|format(p.mins_7d|float) }} min/7d</span>
+      {% if p.is_alive %}<span class="stat alive">● alive</span>{% endif %}
+      <span class="stat dim">owner · {{ p.owner_email or "—" }}</span>
+    </summary>
+    {% set delivs = delivs_by_project.get(p.id, []) %}
+    {% if delivs %}
+      <table class="deliv-table">
+        <thead>
+          <tr>
+            <th>Deliverable</th>
+            <th>Assignee</th>
+            <th>Status</th>
+            <th class="num">Mins / 7d</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in delivs %}
+          <tr>
+            <td>{{ d.title }}</td>
+            <td class="email">{% if d.assignee_user_id %}<a href="/admin/user/{{ d.assignee_user_id }}" style="color:var(--blue);text-decoration:none">{{ d.assignee_email or "—" }}</a>{% else %}—{% endif %}</td>
+            <td>{{ d.status }}</td>
+            <td class="num">{{ "%.1f"|format(d.mins_7d|float) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="empty">No deliverables yet for this project.</div>
+    {% endif %}
+  </details>
+  {% endfor %}
+{% endif %}
+
+{% endblock %}
+{% block scripts %}
+<script>
+async function resyncAll() {
+  if (!confirm('Re-sync orchestrator for ALL users? May take 1-3 min.')) return;
+  const btn = document.getElementById('resync-all-btn');
+  const status = document.getElementById('resync-all-status');
+  btn.disabled = true;
+  btn.textContent = 'Syncing all users…';
+  status.textContent = 'this can take a few minutes';
+  status.className = 'resync-status';
+  try {
+    const r = await fetch('/api/admin/resync-all', { method: 'POST', headers: { Accept: 'application/json' } });
+    if (!r.ok) {
+      btn.disabled = false; btn.textContent = 'Re-sync ALL users';
+      status.textContent = 'Failed (' + r.status + ')';
+      status.className = 'resync-status error';
+      return;
+    }
+    const data = await r.json();
+    status.textContent = data.n_ok + '/' + data.n_total + ' OK — reloading…';
+    setTimeout(() => window.location.reload(), 1000);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Re-sync ALL users';
+    status.textContent = 'Network error: ' + e.message;
+    status.className = 'resync-status error';
+  }
+}
+
+async function resyncUser(userId, btn) {
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = 'Syncing…';
+  try {
+    const r = await fetch('/api/admin/user/' + userId + '/resync', {
+      method: 'POST', headers: { Accept: 'application/json' },
+    });
+    if (!r.ok) {
+      btn.disabled = false; btn.textContent = orig + ' (failed)';
+      return;
+    }
+    btn.textContent = 'Done — reloading…';
+    setTimeout(() => window.location.reload(), 800);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = orig + ' (network)';
+  }
+}
+</script>
+{% endblock %}
+

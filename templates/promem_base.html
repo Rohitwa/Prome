@@ -40,11 +40,16 @@ h1 { font-size:26px; margin:0 0 6px; }
 {% block extra_css %}{% endblock %}
 </style></head><body>
 <div class="topbar">
-  <a class="brand" href="/wiki">ProMem</a>
-  <a href="/wiki" {% if active=='wiki' %}class="active"{% endif %}>wiki</a>
-  <a href="/projects" {% if active=='projects' %}class="active"{% endif %}>projects</a>
-  <a href="/projects/new" {% if active=='new' %}class="active"{% endif %}>new project</a>
-  <a href="/productivity" {% if active=='prod' %}class="active"{% endif %}>productivity</a>
+  {% set is_admin = request.state.user and request.state.user.role == 'admin' %}
+  <a class="brand" href="{% if is_admin %}/admin{% else %}/wiki{% endif %}">ProMem</a>
+  {% if is_admin %}
+    <a href="/admin" {% if active=='admin' %}class="active"{% endif %}>admin</a>
+  {% else %}
+    <a href="/wiki" {% if active=='wiki' %}class="active"{% endif %}>wiki</a>
+    <a href="/projects" {% if active=='projects' %}class="active"{% endif %}>projects</a>
+    <a href="/projects/new" {% if active=='new' %}class="active"{% endif %}>new project</a>
+    <a href="/productivity" {% if active=='prod' %}class="active"{% endif %}>productivity</a>
+  {% endif %}
   {% if request.state.user %}
   <div class="user-pill">
     {% if request.state.user.avatar_url %}

@@ -1,0 +1,230 @@
+{% extends "promem_base.html" %}
+{% set active = "admin" %}
+{% set p = detail.profile %}
+{% set u = detail.uploads %}
+{% set cls = detail.classification %}
+{% set orch = detail.orchestrator %}
+{% block title %}{{ p.email }} — admin{% endblock %}
+{% block extra_css %}
+.crumbs a { color: var(--blue); text-decoration: none; }
+.profile-row { display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline;
+               margin: 8px 0 18px; }
+.profile-row .uid { font-family: ui-monospace, monospace; font-size: 11px;
+                    color: var(--fg3); background: var(--bg3); padding: 3px 9px;
+                    border-radius: 8px; }
+.profile-row .role-badge { padding: 2px 9px; border-radius: 10px; font-size: 10px;
+                            font-weight: 700; text-transform: uppercase;
+                            letter-spacing: 0.4px; }
+.profile-row .role-admin { background: #fef3c7; color: #92400e; }
+.profile-row .role-user  { background: #e5e7eb; color: #374151; }
+
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 14px; margin: 14px 0 24px; }
+.stat-card { background: var(--bg); border: 1px solid var(--border);
+             border-radius: 10px; padding: 14px 16px; border-left: 4px solid var(--gray); }
+.stat-card.health-green  { border-left-color: var(--green); }
+.stat-card.health-amber  { border-left-color: var(--amber); }
+.stat-card.health-red    { border-left-color: var(--red); }
+.stat-card .label { font-size: 11px; color: var(--fg3); text-transform: uppercase;
+                    letter-spacing: 0.5px; margin-bottom: 8px; font-weight: 600; }
+.stat-card .row   { display: flex; justify-content: space-between;
+                    font-size: 12px; margin: 3px 0;
+                    font-family: ui-monospace, monospace; color: var(--fg2); }
+.stat-card .row .v { color: var(--fg); font-weight: 600; }
+.stat-card .row .v.dim { color: var(--fg3); font-weight: 400; }
+.stat-card .row .v.bad { color: var(--red); }
+.stat-card .header-stat { font-size: 22px; font-weight: 700;
+                           font-family: ui-monospace, monospace;
+                           margin-bottom: 6px; }
+
+.section { font-size: 14px; margin: 26px 0 10px; padding-bottom: 6px;
+           border-bottom: 1px solid var(--border); font-weight: 700; }
+
+table.activity { width: 100%; border-collapse: collapse; background: var(--bg);
+                 border: 1px solid var(--border); border-radius: 10px;
+                 overflow: hidden; font-size: 12px; }
+.activity th, .activity td { padding: 8px 10px; text-align: left;
+                              border-bottom: 1px solid var(--border); }
+.activity th { background: var(--bg3); font-size: 10px; text-transform: uppercase;
+               letter-spacing: 0.4px; color: var(--fg3); font-weight: 600; }
+.activity tr:last-child td { border-bottom: none; }
+.activity .ts { font-family: ui-monospace, monospace; color: var(--fg3); }
+.activity .num { font-family: ui-monospace, monospace; text-align: right; }
+.activity .truncate { max-width: 320px; overflow: hidden; text-overflow: ellipsis;
+                       white-space: nowrap; }
+
+.state-pill { display: inline-block; padding: 1px 7px; border-radius: 8px;
+              font-size: 10px; font-weight: 600; text-transform: uppercase;
+              letter-spacing: 0.3px; }
+.state-kept     { background: #dcfce7; color: #166534; }
+.state-archived { background: #e5e7eb; color: #374151; }
+.state-unfiled  { background: #fef3c7; color: #92400e; }
+.state-pending  { background: #fee2e2; color: #991b1b; }
+
+.resync-btn { background: var(--blue); color: #fff; border: none;
+              border-radius: 8px; padding: 7px 14px; font-size: 12px;
+              font-weight: 600; cursor: pointer; font-family: inherit; }
+.resync-btn:hover { background: #1d4ed8; }
+.resync-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.resync-status { font-size: 11px; color: var(--fg3); font-style: italic;
+                 margin-left: 10px; }
+.resync-status.error { color: var(--red); }
+
+.empty { color: var(--fg3); font-style: italic; padding: 18px;
+         text-align: center; font-size: 12px; background: var(--bg);
+         border: 1px dashed var(--border); border-radius: 10px; }
+{% endblock %}
+{% block content %}
+<div class="crumbs"><a href="/admin">admin</a> &raquo; <span style="color:var(--fg)">{{ p.email }}</span></div>
+<h1>{{ p.email }}</h1>
+<div class="profile-row">
+  <span class="role-badge role-{{ p.role }}">{{ p.role }}</span>
+  <span class="uid">{{ detail.user_id }}</span>
+  {% if p.auth_created_at %}<span style="font-size:12px;color:var(--fg3)">joined {{ p.auth_created_at }}</span>{% endif %}
+  <button id="resync-btn" class="resync-btn" onclick="resyncUser()">Re-sync pipeline</button>
+  <span id="resync-status" class="resync-status"></span>
+</div>
+
+<div class="stat-row">
+
+  <div class="stat-card health-{{ detail.health.uploads }}">
+    <div class="label">Tracker uploads</div>
+    <div class="header-stat">{{ u.segments or 0 }} <span style="font-size:13px;color:var(--fg3)">segments</span></div>
+    <div class="row"><span>frames</span><span class="v">{{ u.frames or 0 }}</span></div>
+    <div class="row"><span>last 5 min</span><span class="v {% if (u.segs_5m or 0) > 0 %}{% else %}dim{% endif %}">{{ u.segs_5m or 0 }} seg / {{ u.frames_5m or 0 }} frm</span></div>
+    <div class="row"><span>last 1 hour</span><span class="v {% if (u.segs_1h or 0) > 0 %}{% else %}dim{% endif %}">{{ u.segs_1h or 0 }} seg / {{ u.frames_1h or 0 }} frm</span></div>
+    <div class="row"><span>last 24 hours</span><span class="v dim">{{ u.segs_24h or 0 }} seg / {{ u.frames_24h or 0 }} frm</span></div>
+    <div class="row"><span>last upload</span><span class="v dim">{{ u.last_upload_at or "—" }}</span></div>
+  </div>
+
+  <div class="stat-card health-{{ detail.health.classification }}">
+    <div class="label">Classification</div>
+    <div class="header-stat">{{ cls.total or 0 }} <span style="font-size:13px;color:var(--fg3)">work_pages</span></div>
+    <div class="row"><span>classified</span><span class="v">{{ cls.classified or 0 }}</span></div>
+    <div class="row"><span>pending</span><span class="v {% if (cls.pending or 0) > 0 %}bad{% endif %}">{{ cls.pending or 0 }}</span></div>
+    <div class="row"><span>kept / archived / unfiled</span><span class="v">{{ cls.kept or 0 }} / {{ cls.archived or 0 }} / {{ cls.unfiled or 0 }}</span></div>
+    <div class="row"><span>total minutes</span><span class="v">{{ "%.2f"|format((cls.total_minutes or 0)|float) }}</span></div>
+  </div>
+
+  <div class="stat-card health-{{ detail.health.orchestrator }}">
+    <div class="label">Orchestrator</div>
+    {% if orch %}
+      <div class="row"><span>last sync</span><span class="v dim">{{ orch.last_sync_at or "—" }}</span></div>
+      <div class="row"><span>last classify</span><span class="v dim">{{ orch.last_classify_at or "—" }}</span></div>
+      <div class="row"><span>last match</span><span class="v dim">{{ orch.last_match_at or "—" }}</span></div>
+      <div class="row"><span>last synthesis</span><span class="v dim">{{ orch.last_synthesis_at or "—" }}</span></div>
+      <div class="row"><span>last error</span><span class="v {% if orch.last_error %}bad{% else %}dim{% endif %}">{{ orch.last_error or "—" }}</span></div>
+    {% else %}
+      <div class="header-stat" style="font-size:14px;color:var(--red)">never run</div>
+      <div class="row"><span class="v dim">No orchestrator_state row exists for this user.</span></div>
+    {% endif %}
+  </div>
+
+</div>
+
+<div class="section">Recent tracker segments (last 20)</div>
+{% if detail.recent_segments %}
+  <table class="activity">
+    <thead>
+      <tr>
+        <th>Timestamp (start)</th>
+        <th class="num">Sec</th>
+        <th>Worker</th>
+        <th class="num">Prod</th>
+        <th>Window</th>
+        <th>Short title</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in detail.recent_segments %}
+      <tr>
+        <td class="ts">{{ s.timestamp_start }}</td>
+        <td class="num">{{ s.secs or 0 }}</td>
+        <td>{{ s.worker or "—" }}</td>
+        <td class="num">{{ s.is_productive if s.is_productive is not none else "—" }}</td>
+        <td class="truncate" title="{{ s.window_name or '' }}">{{ s.window_name or "—" }}</td>
+        <td class="truncate" title="{{ s.short_title or '' }}">{{ s.short_title or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <div class="empty">No tracker segments uploaded yet.</div>
+{% endif %}
+
+<div class="section">Recent work pages (last 20)</div>
+{% if detail.recent_pages %}
+  <table class="activity">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>SC</th>
+        <th>Title</th>
+        <th class="num">Mins</th>
+        <th>State</th>
+        <th>Classified at</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for w in detail.recent_pages %}
+      <tr>
+        <td class="ts">{{ w.date_local }}</td>
+        <td>{{ w.sc_label or "—" }}</td>
+        <td class="truncate" title="{{ w.title or '' }}">{{ w.title or "—" }}</td>
+        <td class="num">{{ "%.2f"|format((w.total_minutes or 0)|float) }}</td>
+        <td>
+          {% if w.classified_at is none %}<span class="state-pill state-pending">pending</span>
+          {% elif w.is_archived == 1 %}<span class="state-pill state-archived">archived</span>
+          {% elif w.is_unfiled == 1 %}<span class="state-pill state-unfiled">unfiled</span>
+          {% else %}<span class="state-pill state-kept">kept</span>
+          {% endif %}
+        </td>
+        <td class="ts">{{ w.classified_at or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <div class="empty">No work pages yet — pipeline hasn't classified any segments for this user.</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+async function resyncUser() {
+  const btn = document.getElementById('resync-btn');
+  const status = document.getElementById('resync-status');
+  btn.disabled = true;
+  btn.textContent = 'Syncing…';
+  status.textContent = 'Running pipeline (10-30s)…';
+  status.className = 'resync-status';
+  try {
+    const r = await fetch('/api/admin/user/{{ detail.user_id }}/resync', {
+      method: 'POST',
+      headers: { 'Accept': 'application/json' },
+    });
+    if (!r.ok) {
+      btn.disabled = false;
+      btn.textContent = 'Re-sync pipeline';
+      status.textContent = 'Failed (' + r.status + ')';
+      status.className = 'resync-status error';
+      return;
+    }
+    const data = await r.json();
+    if (!data.ok) {
+      btn.disabled = false;
+      btn.textContent = 'Re-sync pipeline';
+      status.textContent = 'Pipeline returned error: ' + (data.error || 'unknown');
+      status.className = 'resync-status error';
+      return;
+    }
+    status.textContent = 'Done — reloading…';
+    setTimeout(() => window.location.reload(), 800);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Re-sync pipeline';
+    status.textContent = 'Network error: ' + e.message;
+    status.className = 'resync-status error';
+  }
+}
+</script>
+{% endblock %}

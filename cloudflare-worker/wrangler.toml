@@ -1,0 +1,10 @@
+name = "promem-openai-proxy"
+main = "src/worker.js"
+compatibility_date = "2026-04-27"
+workers_dev = true     # use the .workers.dev default subdomain (no custom domain)
+
+[vars]
+SUPABASE_JWKS_URL = "https://oiuaahyuvbdxhobjpyuy.supabase.co/auth/v1/.well-known/jwks.json"
+
+# Secret(s), set out-of-band via `wrangler secret put`:
+#   OPENAI_API_KEY    centralized OpenAI key (stored encrypted)

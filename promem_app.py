@@ -98,6 +98,16 @@ def _slow_loop_job() -> None:
         print("scheduler: slow_loop crashed:\n" + traceback.format_exc())
 
 
+def _watcher_job() -> None:
+    try:
+        from admin_watcher import run_watcher
+        result = run_watcher()
+        if any(v for v in result.values()):
+            print(f"watcher: {result}", flush=True)
+    except Exception:
+        print("scheduler: watcher crashed:\n" + traceback.format_exc())
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     from datetime import timezone as _tz
@@ -120,9 +130,18 @@ async def _lifespan(app: FastAPI):
         coalesce=True,
         misfire_grace_time=600,
     )
+    _scheduler.add_job(
+        _watcher_job,
+        IntervalTrigger(minutes=5),
+        id="admin_watcher",
+        next_run_time=datetime.now(_tz.utc),
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=120,
+    )
     _scheduler.start()
     print("scheduler: started — fast every 30min (first fire: now), "
-          "slow at 14:00+18:00 UTC", flush=True)
+          "slow at 14:00+18:00 UTC, watcher every 5min", flush=True)
     try:
         yield
     finally:
@@ -778,14 +797,36 @@ def admin_dashboard(
     request: Request,
     user_id: str = Depends(require_admin),
 ) -> HTMLResponse:
+    from datetime import timezone as _tz
     with db.conn() as c:
+        pulse = admin_queries.org_pulse(c)
         users = admin_queries.org_productivity_7d(c)
         projects = admin_queries.org_project_rollup_7d(c)
         deliverables = admin_queries.org_deliverables_7d(c)
+        activity_feeds = {
+            str(u["user_id"]): admin_queries.org_user_activity_feed(c, str(u["user_id"]))
+            for u in users
+        }
 
     delivs_by_project: dict[str, list] = {}
     for d in deliverables:
         delivs_by_project.setdefault(d["project_id"], []).append(d)
+
+    now_utc = datetime.now(_tz.utc)
+    for u in users:
+        last_upload = u.get("last_upload")
+        if last_upload:
+            age_sec = (now_utc - last_upload).total_seconds()
+            u["mins_since_upload"] = age_sec / 60.0
+            if age_sec < 1800:
+                u["pulse_health"] = "green"
+            elif age_sec < 3600:
+                u["pulse_health"] = "amber"
+            else:
+                u["pulse_health"] = "red"
+        else:
+            u["mins_since_upload"] = None
+            u["pulse_health"] = "red"
 
     totals = {
         "total_mins_7d": sum(float(u["mins_7d"]) for u in users),
@@ -793,13 +834,116 @@ def admin_dashboard(
         "active_users": sum(1 for u in users if float(u["mins_7d"]) > 0),
         "alive_projects": sum(1 for p in projects if p["is_alive"]),
         "total_projects": len(projects),
+        "open_alerts": sum(int(u.get("open_alerts") or 0) for u in users),
     }
 
     return TEMPLATES.TemplateResponse(request, "promem_admin.html", {
+        "pulse": pulse,
         "users": users,
         "projects": projects,
         "delivs_by_project": delivs_by_project,
         "totals": totals,
+        "activity_feeds": activity_feeds,
+    })
+
+
+@app.get("/admin/user/{target_user_id}", response_class=HTMLResponse)
+def admin_user_detail(
+    request: Request,
+    target_user_id: str,
+    user_id: str = Depends(require_admin),
+) -> HTMLResponse:
+    with db.conn() as c:
+        detail = admin_queries.org_user_detail(c, target_user_id)
+    if not detail.get("profile"):
+        raise HTTPException(status_code=404, detail="User not found in org")
+    return TEMPLATES.TemplateResponse(request, "promem_admin_user.html", {
+        "detail": detail,
+    })
+
+
+def _log_action_start(user_id: str, action: str, actor: str) -> int:
+    """Insert a 'running' admin_action_log row. Returns its id for finish/fail."""
+    with db.conn() as c:
+        row = c.execute(
+            "INSERT INTO admin_action_log (user_id, action, actor_user_id, status) "
+            "VALUES (%s, %s, %s, 'running') RETURNING id",
+            (user_id, action, actor),
+        ).fetchone()
+    return row["id"]
+
+
+def _log_action_finish(log_id: int, status: str, details: dict | None = None) -> None:
+    with db.conn() as c:
+        c.execute(
+            "UPDATE admin_action_log SET status = %s, finished_at = NOW(), "
+            "details_json = %s WHERE id = %s",
+            (status, json.dumps(details) if details else None, log_id),
+        )
+
+
+@app.post("/api/admin/user/{target_user_id}/resync")
+def admin_user_resync(
+    target_user_id: str,
+    user_id: str = Depends(require_admin),
+) -> JSONResponse:
+    """Manually trigger run_full_for_user — escape hatch when the scheduled
+    fast loop hasn't picked up a user. Synchronous; takes 5-30s for typical
+    users. Logs to admin_action_log so the per-user activity panel surfaces
+    the action and its outcome."""
+    from promem_orchestrator import run_full_for_user
+
+    log_id = _log_action_start(target_user_id, "force_resync", user_id)
+    try:
+        result = run_full_for_user(target_user_id, reason="manual_admin_resync")
+    except Exception as e:
+        _log_action_finish(log_id, "failed", {"error": str(e)})
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    ok = bool(result.get("ok", False))
+    _log_action_finish(
+        log_id,
+        "success" if ok else "failed",
+        {"phases_summary": str(result.get("phases"))[:500]},
+    )
+    return JSONResponse({
+        "ok": ok,
+        "phases": result.get("phases"),
+        "error": result.get("error"),
+    })
+
+
+@app.post("/api/admin/resync-all")
+def admin_resync_all(
+    user_id: str = Depends(require_admin),
+) -> JSONResponse:
+    """Trigger run_full_for_user for every role='user' member. Synchronous,
+    sequential — blocks for ~10-30s per user. Each call gets its own
+    admin_action_log row."""
+    from promem_orchestrator import run_full_for_user
+
+    with db.conn() as c:
+        targets = c.execute(
+            "SELECT user_id::text AS uid, email FROM org_members WHERE role = 'user'"
+        ).fetchall()
+
+    results = []
+    for t in targets:
+        log_id = _log_action_start(t["uid"], "force_resync_all", user_id)
+        try:
+            r = run_full_for_user(t["uid"], reason="manual_admin_resync_all")
+            ok = bool(r.get("ok", False))
+            _log_action_finish(log_id, "success" if ok else "failed",
+                               {"phases_summary": str(r.get("phases"))[:500]})
+            results.append({"email": t["email"], "ok": ok})
+        except Exception as e:
+            _log_action_finish(log_id, "failed", {"error": str(e)})
+            results.append({"email": t["email"], "ok": False, "error": str(e)})
+    return JSONResponse({
+        "ok": all(r["ok"] for r in results),
+        "n_total": len(results),
+        "n_ok": sum(1 for r in results if r["ok"]),
+        "results": results,
     })
 
 
